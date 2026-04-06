@@ -5,7 +5,6 @@ import json
 import mediapipe as mp
 import concurrent.futures
 
-# --- 상대 경로 설정 ---
 LABEL_DIR = "./data/labels"
 VIDEO_DIR = "./data/videos"
 SAVE_PATH = "./keypoint_data"
@@ -21,7 +20,6 @@ def get_angle(v1, v2):
     dot_product = np.dot(unit_v1, unit_v2)
     return np.arccos(np.clip(dot_product, -1.0, 1.0))
 
-# [수정 1] 이전 프레임의 손 데이터를 매개변수(prev_lh, prev_rh)로 받습니다.
 def extract_normalized_keypoints(results, prev_lh, prev_rh):
     if results.pose_landmarks:
         pose_res = results.pose_landmarks.landmark
@@ -37,7 +35,6 @@ def extract_normalized_keypoints(results, prev_lh, prev_rh):
         pose_data = np.zeros(33 * 3)
 
     def process_hand(hand_landmarks, prev_data):
-        # MediaPipe가 손을 놓치면 0으로 만들지 않고 직전 프레임(prev_data)을 그대로 유지!
         if not hand_landmarks:
             return prev_data
         
@@ -62,7 +59,6 @@ def extract_normalized_keypoints(results, prev_lh, prev_rh):
     lh_data = process_hand(results.left_hand_landmarks, prev_lh)
     rh_data = process_hand(results.right_hand_landmarks, prev_rh)
     
-    # 특징 벡터 배열과 함께, 다음 프레임을 위해 현재 손 데이터를 반환합니다.
     return np.concatenate([pose_data, lh_data, rh_data]), lh_data, rh_data
 
 def process_single_file(label_file):
@@ -84,30 +80,27 @@ def process_single_file(label_file):
     start_frame = int(start_time * fps)
     end_frame = int(end_time * fps)
 
-    # [수정 2] 방향성 동사 처리: source와 target이 있으면 라벨에 병합
     gloss_sequence = []
     for item in gestures:
         base_gloss = item['gloss_id']
-        direction = item.get('direction', {})
+        # [수정] 1000문장 소규모 학습을 위해 방향성 동사 세분화 로직을 임시로 주석 처리했습니다.
+        # direction = item.get('direction', {})
+        # src = direction.get('source', '')
+        # tgt = direction.get('target', '')
+        # if src and tgt:
+        #     specific_gloss = f"{base_gloss}_{src}_{tgt}"
+        #     gloss_sequence.append(specific_gloss)
+        # else:
         
-        src = direction.get('source', '')
-        tgt = direction.get('target', '')
-        
-        # 방향 정보가 비어있지 않으면 "단어_시작_끝" 형태로 구체화 (예: 돕다1_1_2)
-        if src and tgt:
-            specific_gloss = f"{base_gloss}_{src}_{tgt}"
-            gloss_sequence.append(specific_gloss)
-        else:
-            gloss_sequence.append(base_gloss)
+        # 기본 단어만 정답 라벨로 사용합니다.
+        gloss_sequence.append(base_gloss)
 
     video_features = []
-    
     mp_holistic = mp.solutions.holistic
     cap = cv2.VideoCapture(video_path)
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
     current_frame = start_frame
 
-    # 결측치 방어를 위한 초기 빈 배열 (손 좌표 21개*3차원 + 각도 15개 = 78차원)
     prev_lh = np.zeros(78)
     prev_rh = np.zeros(78)
 
@@ -118,7 +111,6 @@ def process_single_file(label_file):
             image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = holistic.process(image)
             
-            # 이전 프레임의 손 데이터를 넘겨주고, 갱신된 손 데이터를 다시 받아옴
             keypoints, prev_lh, prev_rh = extract_normalized_keypoints(results, prev_lh, prev_rh)
             video_features.append(keypoints)
             current_frame += 1

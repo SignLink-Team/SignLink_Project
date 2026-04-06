@@ -1,3 +1,4 @@
+# predict.py 수정본
 import torch
 import numpy as np
 import json
@@ -8,9 +9,8 @@ from model import SignLanguageModel
 
 INPUT_DIM = 255
 HIDDEN_DIM = 256
-NUM_LAYERS = 2
-DROPOUT = 0.0
-TEST_RATIO = 0.2
+NUM_LAYERS = 2 
+DROPOUT = 0.1
 
 def format_gloss(gloss):
     parts = gloss.split('_')
@@ -71,19 +71,20 @@ def analyze_detailed_prediction(true_seq, pred_seq, gloss_dict):
 
 if __name__ == "__main__":
     BASE_DIR = "./keypoint_data"
-    dataset_info_path = os.path.join(BASE_DIR, "dataset_info.json")
+    # [수정] dataset_info.json 대신 train.py에서 분리해둔 val_dataset_info.json을 불러옵니다!
+    val_info_path = os.path.join(BASE_DIR, "val_dataset_info.json")
     best_model_path = os.path.join(BASE_DIR, "sign_model_best.pth")
     dict_file_path = os.path.join(BASE_DIR, "gloss_dict.json")
     
-    if os.path.exists(dataset_info_path) and os.path.exists(best_model_path):
+    if os.path.exists(val_info_path) and os.path.exists(best_model_path):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model, idx_to_gloss, gloss_dict = load_model(best_model_path, dict_file_path, device)
         
-        with open(dataset_info_path, 'r', encoding='utf-8') as f:
-            dataset_info = json.load(f)
+        # 순수한 테스트 셋 리스트 불러오기
+        with open(val_info_path, 'r', encoding='utf-8') as f:
+            test_set = json.load(f)
             
-        test_start_idx = int(len(dataset_info) * (1 - TEST_RATIO))
-        test_set = dataset_info[test_start_idx:]
+        # 순수한 테스트 셋 안에서 무작위로 5개 추출하여 예측
         test_samples = random.sample(test_set, min(5, len(test_set)))
         
         for i, sample in enumerate(test_samples, 1):
@@ -104,4 +105,4 @@ if __name__ == "__main__":
             analyze_detailed_prediction(true_sequence, predicted_sequence, gloss_dict)
             print("-" * 50)
     else:
-        print("필요한 모델이나 데이터 정보 파일이 없습니다.")
+        print(f"필요한 파일이 없습니다. {val_info_path} 또는 {best_model_path}를 확인하세요. train.py를 다시 실행해야 합니다.")

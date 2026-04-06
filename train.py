@@ -1,3 +1,4 @@
+# train.py 수정본 (데이터 분할 및 저장 부분)
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -8,7 +9,6 @@ import os
 from torch.nn.utils.rnn import pad_sequence
 from model import SignLanguageModel
 
-# --- 상대 경로 설정 ---
 SAVE_PATH = "./keypoint_data"
 
 class SignDataset(Dataset):
@@ -60,6 +60,12 @@ def train_model():
     val_size = total_size - train_size
     train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
 
+    # [중요 수정] 예측을 위해 분리된 Validation(Test) 데이터의 정보만 따로 저장합니다!
+    val_data_info = [full_dataset.data_info[i] for i in val_dataset.indices]
+    with open(os.path.join(SAVE_PATH, "val_dataset_info.json"), 'w', encoding='utf-8') as f:
+        json.dump(val_data_info, f, ensure_ascii=False, indent=4)
+    print("검증(테스트) 데이터셋 정보가 val_dataset_info.json에 저장되었습니다.")
+
     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, collate_fn=collate_fn)
     val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, collate_fn=collate_fn)
 
@@ -68,9 +74,9 @@ def train_model():
     num_classes = len(gloss_dict)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"학습을 시작합니다. 사용 장치: {device}")
+    print(f"학습을 시작합니다. 사용 장치: {device} | 클래스 수: {num_classes}")
     
-    model = SignLanguageModel(input_dim=255, hidden_dim=256, num_classes=num_classes).to(device)
+    model = SignLanguageModel(input_dim=255, hidden_dim=256, num_layers=2, num_classes=num_classes, dropout=0.1).to(device)
     criterion = nn.CTCLoss(blank=0, zero_infinity=True)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
@@ -90,6 +96,9 @@ def train_model():
             
             loss = criterion(logits, targets, feat_lengths, tgt_lengths)
             loss.backward()
+            
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+            
             optimizer.step()
             train_loss += loss.item()
             
