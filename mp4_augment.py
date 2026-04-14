@@ -35,8 +35,19 @@ def random_scale(seq, scale_range=(0.9, 1.1)):
     return seq * scale
 #위치 이동
 def random_shift(seq, shift_range=0.05):
-    shift = np.random.uniform(-shift_range, shift_range, size=seq.shape[1:])
-    return seq + shift
+    shifted = seq.copy()
+    shift = np.random.uniform(-shift_range, shift_range, size=seq.shape[1])
+
+     # 포즈 (0:99)
+    shifted[:, 0:99] += shift[0:99]
+    
+    # 왼손 좌표 (99:162)
+    shifted[:, 99:162] += shift[99:162]
+    
+    # 오른손 좌표 (177:240)
+    shifted[:, 177:240] += shift[177:240]
+
+    return shifted
 
 #시간축 증강 
 #1. 일부 프레임 제거
