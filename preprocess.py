@@ -4,11 +4,11 @@ import os
 import json
 import mediapipe as mp
 import concurrent.futures
-from mp4_augment import augment_keypoints, identity, to_grayscale  # [추가] augment 모듈 import
+from scipy.ndimage import gaussian_filter1d
 
 LABEL_DIR = "./data/labels"
 VIDEO_DIR = "./data/videos"
-SAVE_PATH = "./keypoint_data"
+SAVE_PATH = "./keypoint_data2"
 
 os.makedirs(SAVE_PATH, exist_ok=True)
 
@@ -22,31 +22,28 @@ def get_angle(v1, v2):
     return np.arccos(np.clip(dot_product, -1.0, 1.0))
 
 def extract_normalized_keypoints(results, prev_lh, prev_rh):
+    nose_coords = np.array([0, 0, 0])
     if results.pose_landmarks:
         pose_res = results.pose_landmarks.landmark
         ref_nose = pose_res[0]
-        shoulder_l = pose_res[11]
-        shoulder_r = pose_res[12]
+        nose_coords = np.array([ref_nose.x, ref_nose.y, ref_nose.z])
+        shoulder_l, shoulder_r = pose_res[11], pose_res[12]
         shoulder_width = np.linalg.norm([shoulder_l.x - shoulder_r.x, shoulder_l.y - shoulder_r.y, shoulder_l.z - shoulder_r.z])
         pose_scale = shoulder_width if shoulder_width > 0.01 else 1.0
-        
         pose_data = np.array([[(res.x - ref_nose.x)/pose_scale, (res.y - ref_nose.y)/pose_scale, (res.z - ref_nose.z)/pose_scale] 
                              for res in pose_res]).flatten()
     else:
         pose_data = np.zeros(33 * 3)
 
-    def process_hand(hand_landmarks, prev_data):
-        if not hand_landmarks:
-            return prev_data
-        
+    def process_hand(hand_landmarks, prev_data, nose_c):
+        if not hand_landmarks: return prev_data, 0.0
         wrist = hand_landmarks.landmark[0]
+        dist_to_nose = np.linalg.norm([wrist.x - nose_c[0], wrist.y - nose_c[1], wrist.z - nose_c[2]])
         middle_mcp = hand_landmarks.landmark[9]
         hand_length = np.linalg.norm([middle_mcp.x - wrist.x, middle_mcp.y - wrist.y, middle_mcp.z - wrist.z])
         hand_scale = hand_length if hand_length > 0.01 else 1.0
-
         coords = np.array([[(res.x - wrist.x)/hand_scale, (res.y - wrist.y)/hand_scale, (res.z - wrist.z)/hand_scale] 
                           for res in hand_landmarks.landmark])
-        
         angles = []
         joint_indices = [[0, 1, 2, 3, 4], [0, 5, 6, 7, 8], [0, 9, 10, 11, 12], [0, 13, 14, 15, 16], [0, 17, 18, 19, 20]]
         for finger in joint_indices:
@@ -54,40 +51,14 @@ def extract_normalized_keypoints(results, prev_lh, prev_rh):
                 v1 = coords[finger[i+1]] - coords[finger[i]]
                 v2 = coords[finger[i+2]] - coords[finger[i+1]]
                 angles.append(get_angle(v1, v2))
-        
-        return np.concatenate([coords.flatten(), angles])
+        return np.concatenate([coords.flatten(), angles]), dist_to_nose
 
-    lh_data = process_hand(results.left_hand_landmarks, prev_lh)
-    rh_data = process_hand(results.right_hand_landmarks, prev_rh)
-    
-    return np.concatenate([pose_data, lh_data, rh_data]), lh_data, rh_data
+    lh_data, lh_dist = process_hand(results.left_hand_landmarks, prev_lh, nose_coords)
+    rh_data, rh_dist = process_hand(results.right_hand_landmarks, prev_rh, nose_coords)
+    return np.concatenate([pose_data, lh_data, rh_data, [lh_dist, rh_dist]]), lh_data, rh_data
 
-# [추가] 영상 읽기 루프를 함수로 분리 - frame_fn으로 identity/to_grayscale 선택
-def extract_features_from_video(video_path, start_frame, end_frame, frame_fn):
-    video_features = []
-    cap = cv2.VideoCapture(video_path)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-    current_frame = start_frame
-    prev_lh = np.zeros(78)
-    prev_rh = np.zeros(78)
-
-    with mp.solutions.holistic.Holistic(
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
-    ) as holistic:
-        while cap.isOpened() and current_frame <= end_frame:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frame = frame_fn(frame)  # [추가] identity 또는 to_grayscale 적용
-            image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = holistic.process(image)
-            keypoints, prev_lh, prev_rh = extract_normalized_keypoints(results, prev_lh, prev_rh)
-            video_features.append(keypoints)
-            current_frame += 1
-
-    cap.release()
-    return np.array(video_features) if video_features else None
+def apply_gaussian_smoothing(seq, sigma=1.0):
+    return gaussian_filter1d(seq, sigma=sigma, axis=0)
 
 def process_single_file(label_file):
     filepath = os.path.join(LABEL_DIR, label_file)
@@ -103,62 +74,82 @@ def process_single_file(label_file):
 
     start_time = min(item['start'] for item in gestures)
     end_time = max(item['end'] for item in gestures)
-    
+    word_count = len(gestures) # 단어 수 저장
     fps = data.get('potogrf', {}).get('fps', 30)
-    start_frame = int(start_time * fps)
-    end_frame = int(end_time * fps)
+    
+    margin_frames = int(fps * 0.2)
+    start_frame = max(0, int(start_time * fps) - margin_frames)
+    end_frame = int(end_time * fps) + margin_frames
 
-    gloss_sequence = []
+    # 단어별 프레임 정보 계산 (글로스 시퀀스도 함께 저장) - 추가
+    word_infos = []
+
     for item in gestures:
-        base_gloss = item['gloss_id']
-        # [수정] 1000문장 소규모 학습을 위해 방향성 동사 세분화 로직을 임시로 주석 처리했습니다.
-        # direction = item.get('direction', {})
-        # src = direction.get('source', '')
-        # tgt = direction.get('target', '')
-        # if src and tgt:
-        #     specific_gloss = f"{base_gloss}_{src}_{tgt}"
-        #     gloss_sequence.append(specific_gloss)
-        # else:
+        word_start = max(0, int(item['start'] * fps) - start_frame)
+        word_end = max(0, int(item['end'] * fps) - start_frame)
 
-        # 기본 단어만 정답 라벨로 사용합니다.
-        gloss_sequence.append(base_gloss)
+        word_infos.append({
+            "gloss": item['gloss_id'],
+            "start_frame": word_start,
+            "end_frame": word_end
+        })
 
-    # [변경] 기존 영상 읽기 루프 → extract_features_from_video 함수 호출로 교체
-    # 원본과 흑백을 각각 추출 (영상을 2번 읽음)
-    features      = extract_features_from_video(video_path, start_frame, end_frame, identity)
-    gray_features = extract_features_from_video(video_path, start_frame, end_frame, to_grayscale)
+    gloss_sequence = [w["gloss"] for w in word_infos]
 
-    if features is None or gray_features is None:
-        return None
+    #gloss_sequence = [item['gloss_id'] for item in gestures]
+    video_features = []
+    
+    cap = cv2.VideoCapture(video_path)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    current_frame = start_frame
 
-    # [변경] 기존 1개 저장 → 원본 / 흑백 / 원본+증강 / 흑백+증강 4개로 저장
-    np.save(os.path.join(SAVE_PATH, f"{data['id']}_features.npy"),  features)
-    np.save(os.path.join(SAVE_PATH, f"{data['id']}_gray.npy"),      gray_features)
-    np.save(os.path.join(SAVE_PATH, f"{data['id']}_aug.npy"),       augment_keypoints(features))
-    np.save(os.path.join(SAVE_PATH, f"{data['id']}_gray_aug.npy"),  augment_keypoints(gray_features))
+    prev_lh, prev_rh = np.zeros(78), np.zeros(78)
+    mp_holistic = mp.solutions.holistic
+    
+    with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
+        while cap.isOpened() and current_frame <= end_frame:
+            ret, frame = cap.read()
+            if not ret: break
+            
+            # [속도 개선] 연산 전 이미지를 640 해상도로 강제 축소하여 OpenCV 병목 현상 제거
+            frame = cv2.resize(frame, (640, int(640 * frame.shape[0] / frame.shape[1])))
+            image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = holistic.process(image)
+            
+            keypoints, prev_lh, prev_rh = extract_normalized_keypoints(results, prev_lh, prev_rh)
+            video_features.append(keypoints)
+            current_frame += 1
+            
+    cap.release()
 
-    # [변경] return 딕셔너리에 4개 파일 경로 모두 기록
+    if len(video_features) < 5: return None
+
+    # 1. 스무딩까지 적용
+    base_features = apply_gaussian_smoothing(np.array(video_features))
+    
+    feature_save_name = f"{data['id']}_features.npy"
+    np.save(os.path.join(SAVE_PATH, feature_save_name), base_features)
+    
+    # word_count를 json에 같이 저장하여 train.py에서 쓸 수 있게 함
     return {
         "id": data['id'],
-        "feature_file":  f"{data['id']}_features.npy",
-        "gray_file":     f"{data['id']}_gray.npy",
-        "aug_file":      f"{data['id']}_aug.npy",
-        "gray_aug_file": f"{data['id']}_gray_aug.npy",
+        "feature_file": feature_save_name,
         "gloss_sequence": gloss_sequence,
-        "length": len(features)
+        "length": len(base_features),
+        "word_count": word_count,
+        #words 정보 추가
+        "words": word_infos
     }
 
 def preprocess_data():
-    if not os.path.exists(LABEL_DIR):
-        print(f"오류: 라벨 폴더({LABEL_DIR})를 찾을 수 없습니다.")
-        return
-
+    if not os.path.exists(LABEL_DIR): return
     label_files = [f for f in os.listdir(LABEL_DIR) if f.endswith('.json')]
     dataset_summary = []
     all_glosses = set()
 
-    print(f"총 {len(label_files)}개의 라벨 파일을 찾았습니다. 전처리를 시작합니다...")
+    print(f"총 {len(label_files)}개 파일 고속 전처리 시작 (해상도 최적화, 증강 생략)...")
 
+    # CPU 코어를 최대한 활용
     with concurrent.futures.ProcessPoolExecutor() as executor:
         results = list(executor.map(process_single_file, label_files))
         
@@ -168,16 +159,13 @@ def preprocess_data():
             for gloss in res['gloss_sequence']:
                 all_glosses.add(gloss)
 
-    gloss_list = ["<blank>"] + sorted(list(all_glosses))
-    gloss_dict = {gloss: i for i, gloss in enumerate(gloss_list)}
-    
+    gloss_dict = {gloss: i for i, gloss in enumerate(["<blank>"] + sorted(list(all_glosses)))}
     with open(os.path.join(SAVE_PATH, "gloss_dict.json"), 'w', encoding='utf-8') as f:
         json.dump(gloss_dict, f, ensure_ascii=False, indent=4)
-    
     with open(os.path.join(SAVE_PATH, "dataset_info.json"), 'w', encoding='utf-8') as f:
         json.dump(dataset_summary, f, ensure_ascii=False, indent=4)
         
-    print(f"전처리 완료! 추출된 데이터가 {SAVE_PATH} 폴더에 저장되었습니다.")
+    print(f"전처리 완료! (용량 절약 및 속도 개선 완료, 총 데이터 수: {len(dataset_summary)})")
 
 if __name__ == "__main__":
     preprocess_data()
