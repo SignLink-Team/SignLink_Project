@@ -131,6 +131,16 @@ def augment_keypoints(seq):
         seq = time_mask(seq, label_segments)
     if random.random() < AUG_CONFIG["time_warp_prob"]:
         seq = time_warp(seq)
+
+    if not applied:
+        choice = random.choice(["noise", "scale", "shift"])
+        if choice == "noise":
+            seq = add_noise(seq)
+        elif choice == "scale":
+            seq = random_scale(seq)
+        else:
+            seq = random_shift(seq)
+
     return seq
 
 """
