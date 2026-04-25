@@ -27,26 +27,48 @@ AUGMENTATIONS = {
 }
 
 def add_noise(seq, noise_level=0.01):
-    noise = np.random.randn(*seq.shape) * noise_level
-    return seq + noise
-#스케일 변형
+    noisy = seq.copy()
+    # 좌표 영역에만 노이즈 (각도/rel/미분 제외)
+    coord_slices = [slice(0,99), slice(99,162), slice(177,240)]
+    for s in coord_slices:
+        noisy[:, s] += np.random.randn(seq.shape[0], s.stop - s.start) * noise_level
+    return noisy
+
 def random_scale(seq, scale_range=(0.9, 1.1)):
+    scaled = seq.copy()
     scale = np.random.uniform(*scale_range)
-    return seq * scale
-#위치 이동
+    
+    # 좌표만 스케일 (각도는 스케일 불변, rel벡터도 스케일 적용)
+    scaled[:, 0:99]    *= scale  # 포즈 좌표
+    scaled[:, 99:162]  *= scale  # 왼손 좌표
+    scaled[:, 177:240] *= scale  # 오른손 좌표
+    scaled[:, 255:261] *= scale  # lh_rel, rh_rel (거리 벡터이므로 스케일 적용)
+    # 각도 [162:177], [240:255] → 건드리지 않음
+    # velocity/acceleration [261:] → 건드리지 않음
+    return scaled
+
 def random_shift(seq, shift_range=0.05):
     shifted = seq.copy()
-    shift = np.random.uniform(-shift_range, shift_range, size=seq.shape[1])
-
-     # 포즈 (0:99)
-    shifted[:, 0:99] += shift[0:99]
+    shift = np.random.uniform(-shift_range, shift_range, size=3)  # xyz 3축만
     
-    # 왼손 좌표 (99:162)
-    shifted[:, 99:162] += shift[99:162]
-    
-    # 오른손 좌표 (177:240)
-    shifted[:, 177:240] += shift[177:240]
+    # 포즈 좌표 (x,y,z 주기적으로 같은 shift)
+    shifted[:, 0:99:3]   += shift[0]  # x
+    shifted[:, 1:99:3]   += shift[1]  # y
+    shifted[:, 2:99:3]   += shift[2]  # z
 
+    # 왼손 좌표
+    shifted[:, 99:162:3]  += shift[0]
+    shifted[:, 100:162:3] += shift[1]
+    shifted[:, 101:162:3] += shift[2]
+
+    # 오른손 좌표
+    shifted[:, 177:240:3] += shift[0]
+    shifted[:, 178:240:3] += shift[1]
+    shifted[:, 179:240:3] += shift[2]
+
+    # rel 벡터도 같은 shift 적용
+    shifted[:, 255:258] += shift  # lh_rel
+    shifted[:, 258:261] += shift  # rh_rel
     return shifted
 
 #시간축 증강 
