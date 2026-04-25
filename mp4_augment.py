@@ -10,6 +10,9 @@ AUG_CONFIG = {
     "time_warp_prob": 0.3,
 }
 
+BASE_DIM = 261  # 원본 feature 차원
+FULL_DIM = 783  # position + velocity + acceleration
+
 def to_grayscale(frame: np.ndarray) -> np.ndarray:
     """
     BGR 이미지를 grayscale로 변환 후
@@ -26,50 +29,57 @@ AUGMENTATIONS = {
     "grayscale": to_grayscale,
 }
 
-def add_noise(seq, noise_level=0.01):
-    noisy = seq.copy()
-    # 좌표 영역에만 노이즈 (각도/rel/미분 제외)
-    coord_slices = [slice(0,99), slice(99,162), slice(177,240)]
-    for s in coord_slices:
-        noisy[:, s] += np.random.randn(seq.shape[0], s.stop - s.start) * noise_level
-    return noisy
+# 위치, 속도, 가속도 모두 포함/ 스케일링, 노이즈때 좌표 흔들리면 수정용으로 첨부
+def apply_motion_derivatives(features):
+    velocity = np.diff(features, axis=0, prepend=features[:1])
+    acceleration = np.diff(velocity, axis=0, prepend=velocity[:1])
+    return np.concatenate([features, velocity, acceleration], axis=1)
 
+def get_base(seq):
+    if seq.shape[1] == BASE_DIM:
+        return seq.copy()
+    elif seq.shape[1] == FULL_DIM:
+        return seq[:, :BASE_DIM].copy()
+    else:
+        raise ValueError(f"unexpected feature dim: {seq.shape[1]}")
+    
+def add_noise(seq, noise_level=0.005):
+    base = get_base(seq)
+    # pose
+    base[:, 0:99]    += np.random.randn(base.shape[0], 99)  * noise_level
+    # lh coords
+    base[:, 99:162]  += np.random.randn(base.shape[0], 63)  * noise_level
+    # rh coords
+    base[:, 177:240] += np.random.randn(base.shape[0], 63)  * noise_level
+    # rel
+    base[:, 255:261] += np.random.randn(base.shape[0], 6)   * noise_level
+    return apply_motion_derivatives(base)
+
+#스케일 변형
 def random_scale(seq, scale_range=(0.9, 1.1)):
-    scaled = seq.copy()
+    base = get_base(seq)
     scale = np.random.uniform(*scale_range)
-    
-    # 좌표만 스케일 (각도는 스케일 불변, rel벡터도 스케일 적용)
-    scaled[:, 0:99]    *= scale  # 포즈 좌표
-    scaled[:, 99:162]  *= scale  # 왼손 좌표
-    scaled[:, 177:240] *= scale  # 오른손 좌표
-    scaled[:, 255:261] *= scale  # lh_rel, rh_rel (거리 벡터이므로 스케일 적용)
-    # 각도 [162:177], [240:255] → 건드리지 않음
-    # velocity/acceleration [261:] → 건드리지 않음
-    return scaled
+    # pose
+    base[:, 0:99]   *= scale
+    # 손 로컬 좌표 (손 내부 비율도 같이 scale)
+    base[:, 99:162]  *= scale  # lh coords
+    base[:, 177:240] *= scale  # rh coords
+    # rel vectors
+    base[:, 255:261] *= scale
+    return apply_motion_derivatives(base)
 
-def random_shift(seq, shift_range=0.05):
-    shifted = seq.copy()
-    shift = np.random.uniform(-shift_range, shift_range, size=3)  # xyz 3축만
-    
-    # 포즈 좌표 (x,y,z 주기적으로 같은 shift)
-    shifted[:, 0:99:3]   += shift[0]  # x
-    shifted[:, 1:99:3]   += shift[1]  # y
-    shifted[:, 2:99:3]   += shift[2]  # z
-
-    # 왼손 좌표
-    shifted[:, 99:162:3]  += shift[0]
-    shifted[:, 100:162:3] += shift[1]
-    shifted[:, 101:162:3] += shift[2]
-
-    # 오른손 좌표
-    shifted[:, 177:240:3] += shift[0]
-    shifted[:, 178:240:3] += shift[1]
-    shifted[:, 179:240:3] += shift[2]
-
-    # rel 벡터도 같은 shift 적용
-    shifted[:, 255:258] += shift  # lh_rel
-    shifted[:, 258:261] += shift  # rh_rel
-    return shifted
+#위치 이동
+def random_shift(seq, shift_range=0.03):
+    base = get_base(seq)
+    shift = np.random.uniform(-shift_range, shift_range, size=3)
+    # pose xyz
+    base[:, 0:99:3] += shift[0]
+    base[:, 1:99:3] += shift[1]
+    base[:, 2:99:3] += shift[2]
+    # rel vectors (손↔코 상대거리)
+    base[:, 255:258] += shift  # lh_rel
+    base[:, 258:261] += shift  # rh_rel
+    return apply_motion_derivatives(base)
 
 #시간축 증강 
 #1. 일부 프레임 제거
