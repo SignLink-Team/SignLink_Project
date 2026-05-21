@@ -1,0 +1,227 @@
+{
+  "id" : "VXPAKOKS230809440",
+  "opertor" : "label14",
+  "krlgg_sntenc" : {
+    "koreanText" : "그래서 고혈압 약은 금식 중에라도 거르지 말고 복용을 해 주셔야 합니다",
+    "realm" : "의료",
+    "thema" : "진료상담",
+    "detailThema" : "진료상담",
+    "category" : "구어 > 무작위 구성"
+  },
+  "sign_script" : {
+    "sign_gestures_strong" : [ {
+      "start" : 3.475,
+      "end" : 3.975,
+      "gloss_id" : "때문1",
+      "express" : "s",
+      "direction" : {
+        "source" : "",
+        "target" : ""
+      },
+      "sentence_loc" : {
+        "start" : "0",
+        "end" : "0"
+      }
+    }, {
+      "start" : 4.274,
+      "end" : 4.655,
+      "gloss_id" : "먹다1",
+      "express" : "s",
+      "direction" : {
+        "source" : "",
+        "target" : ""
+      },
+      "sentence_loc" : {
+        "start" : "",
+        "end" : ""
+      }
+    }, {
+      "start" : 4.845,
+      "end" : 5.124,
+      "gloss_id" : "금지1",
+      "express" : "s",
+      "direction" : {
+        "source" : "1",
+        "target" : "2"
+      },
+      "sentence_loc" : {
+        "start" : "",
+        "end" : ""
+      }
+    }, {
+      "start" : 5.452,
+      "end" : 5.86,
+      "gloss_id" : "중1",
+      "express" : "s",
+      "direction" : {
+        "source" : "",
+        "target" : ""
+      },
+      "sentence_loc" : {
+        "start" : "4",
+        "end" : "4"
+      }
+    }, {
+      "start" : 6.243,
+      "end" : 6.541,
+      "gloss_id" : "혈압1",
+      "express" : "s",
+      "direction" : {
+        "source" : "",
+        "target" : ""
+      },
+      "sentence_loc" : {
+        "start" : "1",
+        "end" : "1"
+      }
+    }, {
+      "start" : 6.739,
+      "end" : 7.165,
+      "gloss_id" : "약1",
+      "express" : "s",
+      "direction" : {
+        "source" : "",
+        "target" : ""
+      },
+      "sentence_loc" : {
+        "start" : "2",
+        "end" : "2"
+      }
+    }, {
+      "start" : 7.456,
+      "end" : 8.131,
+      "gloss_id" : "약속1",
+      "express" : "s",
+      "direction" : {
+        "source" : "",
+        "target" : ""
+      },
+      "sentence_loc" : {
+        "start" : "8",
+        "end" : "10"
+      }
+    }, {
+      "start" : 8.643,
+      "end" : 8.941,
+      "gloss_id" : "약먹다1",
+      "express" : "s",
+      "direction" : {
+        "source" : "",
+        "target" : ""
+      },
+      "sentence_loc" : {
+        "start" : "7",
+        "end" : "7"
+      }
+    } ],
+    "sign_gestures_weak" : [ {
+      "start" : 3.475,
+      "end" : 3.975,
+      "gloss_id" : "때문1",
+      "express" : "s",
+      "direction" : null,
+      "sentence_loc" : null
+    }, {
+      "start" : 4.845,
+      "end" : 5.124,
+      "gloss_id" : "금지1",
+      "express" : "s",
+      "direction" : null,
+      "sentence_loc" : null
+    }, {
+      "start" : 5.452,
+      "end" : 5.86,
+      "gloss_id" : "중1",
+      "express" : "s",
+      "direction" : null,
+      "sentence_loc" : null
+    }, {
+      "start" : 6.739,
+      "end" : 7.165,
+      "gloss_id" : "약1",
+      "express" : "s",
+      "direction" : null,
+      "sentence_loc" : null
+    }, {
+      "start" : 7.456,
+      "end" : 8.131,
+      "gloss_id" : "약속1",
+      "express" : "s",
+      "direction" : null,
+      "sentence_loc" : null
+    } ]
+  },
+  "nms_script" : {
+    "Mmo" : [ ],
+    "Hno" : [ {
+      "descriptor" : "",
+      "start" : 3.475,
+      "end" : 3.975
+    }, {
+      "descriptor" : "",
+      "start" : 4.845,
+      "end" : 5.124
+    }, {
+      "descriptor" : "",
+      "start" : 7.456,
+      "end" : 8.131
+    }, {
+      "descriptor" : "",
+      "start" : 8.643,
+      "end" : 8.941
+    }, {
+      "descriptor" : "",
+      "start" : 5.452,
+      "end" : 5.86
+    } ],
+    "Mo1" : [ ],
+    "Hs" : [ ],
+    "EBf" : [ {
+      "descriptor" : "",
+      "start" : 7.456,
+      "end" : 8.131
+    } ],
+    "Mctr" : [ {
+      "descriptor" : "",
+      "start" : 8.643,
+      "end" : 8.941
+    }, {
+      "descriptor" : "",
+      "start" : 3.475,
+      "end" : 3.975
+    } ],
+    "Ci" : [ ],
+    "Ebu" : [ {
+      "descriptor" : "",
+      "start" : 3.475,
+      "end" : 5.17
+    }, {
+      "descriptor" : "",
+      "start" : 6.261,
+      "end" : 7.128
+    } ]
+  },
+  "vido_file_nm" : "VXPAKOKS230809440",
+  "potogrf" : {
+    "createdTime" : "2023-11-15 11:19:41",
+    "sentence_ID" : "VXPAKOKS230809440",
+    "photographer" : "C",
+    "location" : "c",
+    "devide" : "Sony A6400",
+    "iris" : 4,
+    "gain" : "ISO 250",
+    "whiteBalance" : 5500,
+    "shutterSpeed" : "1/60",
+    "fps" : 30,
+    "width" : 1920,
+    "height" : 1080,
+    "format" : "MP4",
+    "codec" : "XAVC S HD",
+    "sl_speaker_id" : "MJ",
+    "sl_speaker_age" : 39,
+    "sl_speaker_sex" : "female",
+    "sl_speaker_legion" : "Siheung",
+    "sl_speaker_hand" : "right_handed"
+  },
+  "license" : "국립국어원"
+}

@@ -1,0 +1,202 @@
+{
+  "id" : "VXPAKOKS230809430",
+  "opertor" : "label11",
+  "krlgg_sntenc" : {
+    "koreanText" : "평소에 눈이 건조해서 불편감이 느껴질 때에는 인공 누액을 사용하시는 것이 좋습니다",
+    "realm" : "의료",
+    "thema" : "진료상담",
+    "detailThema" : "진료상담",
+    "category" : "구어 > 무작위 구성"
+  },
+  "sign_script" : {
+    "sign_gestures_strong" : [ {
+      "start" : 3.412,
+      "end" : 3.66,
+      "gloss_id" : "눈1",
+      "express" : "s",
+      "direction" : {
+        "source" : "",
+        "target" : ""
+      },
+      "sentence_loc" : {
+        "start" : "1",
+        "end" : "1"
+      }
+    }, {
+      "start" : 4.059,
+      "end" : 4.268,
+      "gloss_id" : "보통1",
+      "express" : "s",
+      "direction" : {
+        "source" : "",
+        "target" : ""
+      },
+      "sentence_loc" : {
+        "start" : "0",
+        "end" : "0"
+      }
+    }, {
+      "start" : 4.583,
+      "end" : 5.063,
+      "gloss_id" : "건조1",
+      "express" : "s",
+      "direction" : {
+        "source" : "",
+        "target" : ""
+      },
+      "sentence_loc" : {
+        "start" : "2",
+        "end" : "2"
+      }
+    }, {
+      "start" : 5.799,
+      "end" : 6.124,
+      "gloss_id" : "주먹형1",
+      "express" : "s",
+      "direction" : {
+        "source" : "",
+        "target" : ""
+      },
+      "sentence_loc" : {
+        "start" : "",
+        "end" : ""
+      }
+    }, {
+      "start" : 6.433,
+      "end" : 6.759,
+      "gloss_id" : "귀찮다1",
+      "express" : "s",
+      "direction" : {
+        "source" : "",
+        "target" : ""
+      },
+      "sentence_loc" : {
+        "start" : "3",
+        "end" : "3"
+      }
+    }, {
+      "start" : 7.142,
+      "end" : 7.284,
+      "gloss_id" : "있다1",
+      "express" : "s",
+      "direction" : {
+        "source" : "",
+        "target" : ""
+      },
+      "sentence_loc" : {
+        "start" : "4",
+        "end" : "5"
+      }
+    }, {
+      "start" : 7.67,
+      "end" : 7.772,
+      "gloss_id" : "거짓1",
+      "express" : "s",
+      "direction" : {
+        "source" : "",
+        "target" : ""
+      },
+      "sentence_loc" : {
+        "start" : "6",
+        "end" : "6"
+      }
+    }, {
+      "start" : 7.922,
+      "end" : 8.066,
+      "gloss_id" : "울다1",
+      "express" : "s",
+      "direction" : {
+        "source" : "",
+        "target" : ""
+      },
+      "sentence_loc" : {
+        "start" : "7",
+        "end" : "7"
+      }
+    }, {
+      "start" : 8.244,
+      "end" : 8.895,
+      "gloss_id" : "안약1",
+      "express" : "s",
+      "direction" : {
+        "source" : "",
+        "target" : ""
+      },
+      "sentence_loc" : {
+        "start" : "8",
+        "end" : "10"
+      }
+    } ],
+    "sign_gestures_weak" : [ {
+      "start" : 4.059,
+      "end" : 4.268,
+      "gloss_id" : "보통1",
+      "express" : "s",
+      "direction" : null,
+      "sentence_loc" : null
+    }, {
+      "start" : 4.583,
+      "end" : 5.063,
+      "gloss_id" : "건조1",
+      "express" : "s",
+      "direction" : null,
+      "sentence_loc" : null
+    }, {
+      "start" : 6.433,
+      "end" : 6.759,
+      "gloss_id" : "귀찮다1",
+      "express" : "s",
+      "direction" : null,
+      "sentence_loc" : null
+    } ]
+  },
+  "nms_script" : {
+    "Mmo" : [ ],
+    "Hno" : [ {
+      "descriptor" : "",
+      "start" : 4.583,
+      "end" : 5.063
+    }, {
+      "descriptor" : "",
+      "start" : 7.142,
+      "end" : 7.284
+    }, {
+      "descriptor" : "",
+      "start" : 8.244,
+      "end" : 8.895
+    } ],
+    "Mo1" : [ ],
+    "Hs" : [ ],
+    "EBf" : [ {
+      "descriptor" : "",
+      "start" : 4.583,
+      "end" : 7.262
+    } ],
+    "Mctr" : [ ],
+    "Ci" : [ ],
+    "Ebu" : [ ]
+  },
+  "vido_file_nm" : "VXPAKOKS230809430",
+  "potogrf" : {
+    "createdTime" : "2023-11-15 10:00:21",
+    "sentence_ID" : "VXPAKOKS230809430",
+    "photographer" : "C",
+    "location" : "c",
+    "devide" : "Sony A6400",
+    "iris" : 4,
+    "gain" : "ISO 250",
+    "whiteBalance" : 5500,
+    "shutterSpeed" : "1/60",
+    "fps" : 30,
+    "width" : 1920,
+    "height" : 1080,
+    "format" : "MP4",
+    "codec" : "XAVC S HD",
+    "sl_speaker_id" : "MJ",
+    "sl_speaker_age" : 39,
+    "sl_speaker_sex" : "female",
+    "sl_speaker_legion" : "Siheung",
+    "sl_speaker_hand" : "right_handed"
+  },
+  "license" : "국립국어원"
+}
