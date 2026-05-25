@@ -30,8 +30,10 @@ from nonmanual_features import extract_nonmanual
 # ---------------------------------------------------------------------------
 # 설정
 # ---------------------------------------------------------------------------
+torch.serialization.add_safe_globals([np.core.multiarray.scalar])
+torch.serialization.add_safe_globals([np.dtype])
 
-CKPT_PATH = r"D:\새 폴더 (2)\deepRun\keypoint_data\checkpoints_nms\best_nms.pt"
+CKPT_PATH = r"C:\ai\best_nms.pt"
 
 NMS_KEYS  = ["Mo1", "Mmo", "Mctr", "Ci", "Ebu", "EBf", "Hno", "Hs"]
 
@@ -86,7 +88,11 @@ class NMSClassifier(nn.Module):
 
 
 def load_model():
-    ckpt  = torch.load(CKPT_PATH, map_location=DEVICE)
+    ckpt = torch.load(
+        CKPT_PATH,
+        map_location=DEVICE,
+        weights_only=False
+    )
     cfg   = ckpt["cfg"]
     model = NMSClassifier(
         input_dim  = cfg["input_dim"],
@@ -176,10 +182,10 @@ def draw_overlay(frame, probs, smoothed_probs):
 # 메인
 # ---------------------------------------------------------------------------
 
-def run(camera_idx=0, window_size=60, save_path=None):
+def run(camera_idx=1, window_size=60, save_path=None):
     model = load_model()
 
-    cap = cv2.VideoCapture(camera_idx)
+    cap = cv2.VideoCapture(1)
     if not cap.isOpened():
         print(f"카메라 열기 실패 (index: {camera_idx})")
         return
