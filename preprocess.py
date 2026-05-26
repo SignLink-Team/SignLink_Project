@@ -21,7 +21,8 @@ def get_angle(v1, v2):
     dot_product = np.dot(unit_v1, unit_v2)
     return np.arccos(np.clip(dot_product, -1.0, 1.0))
 
-def extract_normalized_keypoints(results, prev_lh, prev_rh):
+def extract_normalized_keypoints(results):
+    """상대적 벡터(rel_pos)를 추가하여 전역적 위치 정보 보존"""
     nose_coords = np.array([0, 0, 0])
     if results.pose_landmarks:
         pose_res = results.pose_landmarks.landmark
@@ -35,10 +36,11 @@ def extract_normalized_keypoints(results, prev_lh, prev_rh):
     else:
         pose_data = np.zeros(33 * 3)
 
-    def process_hand(hand_landmarks, prev_data, nose_c):
-        if not hand_landmarks: return prev_data, 0.0
+    def process_hand(hand_landmarks, nose_c):
+        if not hand_landmarks: return np.zeros(78), np.zeros(3)
         wrist = hand_landmarks.landmark[0]
-        dist_to_nose = np.linalg.norm([wrist.x - nose_c[0], wrist.y - nose_c[1], wrist.z - nose_c[2]])
+        # 코와 손목 사이의 상대적 위치 벡터 추가
+        rel_pos = np.array([wrist.x - nose_c[0], wrist.y - nose_c[1], wrist.z - nose_c[2]])
         middle_mcp = hand_landmarks.landmark[9]
         hand_length = np.linalg.norm([middle_mcp.x - wrist.x, middle_mcp.y - wrist.y, middle_mcp.z - wrist.z])
         hand_scale = hand_length if hand_length > 0.01 else 1.0
@@ -51,14 +53,19 @@ def extract_normalized_keypoints(results, prev_lh, prev_rh):
                 v1 = coords[finger[i+1]] - coords[finger[i]]
                 v2 = coords[finger[i+2]] - coords[finger[i+1]]
                 angles.append(get_angle(v1, v2))
-        return np.concatenate([coords.flatten(), angles]), dist_to_nose
+        return np.concatenate([coords.flatten(), angles]), rel_pos
 
-    lh_data, lh_dist = process_hand(results.left_hand_landmarks, prev_lh, nose_coords)
-    rh_data, rh_dist = process_hand(results.right_hand_landmarks, prev_rh, nose_coords)
-    return np.concatenate([pose_data, lh_data, rh_data, [lh_dist, rh_dist]]), lh_data, rh_data
+    lh_data, lh_rel = process_hand(results.left_hand_landmarks, nose_coords)
+    rh_data, rh_rel = process_hand(results.right_hand_landmarks, nose_coords)
+    # 총 263차원: pose(99) + lh(78) + rh(78) + lh_rel(3) + rh_rel(3) + [lh_dist, rh_dist](2)
+    # 여기서는 lh_rel, rh_rel 벡터 자체를 포함
+    return np.concatenate([pose_data, lh_data, rh_data, lh_rel, rh_rel])
 
-def apply_gaussian_smoothing(seq, sigma=1.0):
-    return gaussian_filter1d(seq, sigma=sigma, axis=0)
+def apply_motion_derivatives(features):
+    """속도 및 가속도 결합 (최종 차원 확장)"""
+    velocity = np.diff(features, axis=0, prepend=features[:1])
+    acceleration = np.diff(velocity, axis=0, prepend=velocity[:1])
+    return np.concatenate([features, velocity, acceleration], axis=1)
 
 def process_single_file(label_file):
     filepath = os.path.join(LABEL_DIR, label_file)
@@ -74,10 +81,10 @@ def process_single_file(label_file):
 
     start_time = min(item['start'] for item in gestures)
     end_time = max(item['end'] for item in gestures)
-    word_count = len(gestures) # 단어 수 저장
     fps = data.get('potogrf', {}).get('fps', 30)
     
-    margin_frames = int(fps * 0.2)
+    # 웹캠 환경 고려 마진 0.5초로 확대
+    margin_frames = int(fps * 0.5)
     start_frame = max(0, int(start_time * fps) - margin_frames)
     end_frame = int(end_time * fps) + margin_frames
 
@@ -87,68 +94,46 @@ def process_single_file(label_file):
     cap = cv2.VideoCapture(video_path)
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
     current_frame = start_frame
-
-    prev_lh, prev_rh = np.zeros(78), np.zeros(78)
-    mp_holistic = mp.solutions.holistic
     
-    with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
+    with mp.solutions.holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
         while cap.isOpened() and current_frame <= end_frame:
             ret, frame = cap.read()
             if not ret: break
-            
-            # [속도 개선] 연산 전 이미지를 640 해상도로 강제 축소하여 OpenCV 병목 현상 제거
             frame = cv2.resize(frame, (640, int(640 * frame.shape[0] / frame.shape[1])))
-            image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = holistic.process(image)
-            
-            keypoints, prev_lh, prev_rh = extract_normalized_keypoints(results, prev_lh, prev_rh)
-            video_features.append(keypoints)
+            results = holistic.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            video_features.append(extract_normalized_keypoints(results))
             current_frame += 1
-            
     cap.release()
 
     if len(video_features) < 5: return None
 
-    # 1. 스무딩까지 적용
-    base_features = apply_gaussian_smoothing(np.array(video_features))
+    # 스무딩 및 동적 피처 추가
+    features = gaussian_filter1d(np.array(video_features), sigma=1.0, axis=0)
+    enhanced_features = apply_motion_derivatives(features)
     
     feature_save_name = f"{data['id']}_features.npy"
-    np.save(os.path.join(SAVE_PATH, feature_save_name), base_features)
+    np.save(os.path.join(SAVE_PATH, feature_save_name), enhanced_features)
     
-    # word_count를 json에 같이 저장하여 train.py에서 쓸 수 있게 함
     return {
-        "id": data['id'],
-        "feature_file": feature_save_name,
-        "gloss_sequence": gloss_sequence,
-        "length": len(base_features),
-        "word_count": word_count
+        "id": data['id'], "feature_file": feature_save_name,
+        "gloss_sequence": gloss_sequence, "length": len(enhanced_features),
+        "word_count": len(gestures), "input_dim": enhanced_features.shape[1]
     }
 
 def preprocess_data():
-    if not os.path.exists(LABEL_DIR): return
     label_files = [f for f in os.listdir(LABEL_DIR) if f.endswith('.json')]
-    dataset_summary = []
-    all_glosses = set()
-
-    print(f"총 {len(label_files)}개 파일 고속 전처리 시작 (해상도 최적화, 증강 생략)...")
-
-    # CPU 코어를 최대한 활용
+    print(f"총 {len(label_files)}개 파일 전처리 시작...")
     with concurrent.futures.ProcessPoolExecutor() as executor:
-        results = list(executor.map(process_single_file, label_files))
-        
-    for res in results:
-        if res is not None:
-            dataset_summary.append(res)
-            for gloss in res['gloss_sequence']:
-                all_glosses.add(gloss)
+        results = [res for res in executor.map(process_single_file, label_files) if res]
 
-    gloss_dict = {gloss: i for i, gloss in enumerate(["<blank>"] + sorted(list(all_glosses)))}
+    all_glosses = sorted(list(set(g for r in results for g in r['gloss_sequence'])))
+    gloss_dict = {gloss: i for i, gloss in enumerate(["<blank>"] + all_glosses)}
+    
     with open(os.path.join(SAVE_PATH, "gloss_dict.json"), 'w', encoding='utf-8') as f:
         json.dump(gloss_dict, f, ensure_ascii=False, indent=4)
     with open(os.path.join(SAVE_PATH, "dataset_info.json"), 'w', encoding='utf-8') as f:
-        json.dump(dataset_summary, f, ensure_ascii=False, indent=4)
-        
-    print(f"전처리 완료! (용량 절약 및 속도 개선 완료, 총 데이터 수: {len(dataset_summary)})")
+        json.dump(results, f, ensure_ascii=False, indent=4)
+    print(f"전처리 완료. 입력 차원: {results[0]['input_dim']}")
 
 if __name__ == "__main__":
     preprocess_data()
