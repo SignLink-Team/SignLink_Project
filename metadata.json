@@ -1,0 +1,6 @@
+{
+  "name": "SignLink",
+  "description": "의료진을 위한 실시간 수어 번역 서비스 (Real-time Sign Language Translation Service for Medical Staff)",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
