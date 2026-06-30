@@ -1,0 +1,421 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
+import { Activity, Info } from 'lucide-react'
+import { api } from './api'
+import { CameraView } from './components/CameraView'
+import { Header } from './components/Header'
+import { HistoryView } from './components/HistoryView'
+import { InstructionsModal } from './components/InstructionsModal'
+import { LoginView } from './components/LoginView'
+import { TranslationResult } from './components/TranslationResult'
+import { ApiSession, TranslationLog, UserState, ViewState } from './types'
+
+const emptyUser: UserState = {
+  isLoggedIn: false,
+  id: null,
+  email: null,
+  name: null,
+  role: null,
+}
+
+const WS_BASE = import.meta.env.VITE_WS_BASE || `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+
+function mapApiLog(item: {
+  id: string
+  translated_text: string
+  input_time: string
+  category?: string
+}): TranslationLog {
+  return {
+    id: item.id,
+    text: item.translated_text,
+    timestamp: new Date(item.input_time).toLocaleString('ko-KR'),
+    category: item.category,
+  }
+}
+
+export default function App() {
+  const [currentView, setCurrentView] = useState<ViewState>('main')
+  const [user, setUser] = useState<UserState>(emptyUser)
+  const [autoSave, setAutoSave] = useState(() => localStorage.getItem('signlink_autosave') !== 'false')
+  const [logs, setLogs] = useState<TranslationLog[]>([])
+  const [session, setSession] = useState<ApiSession | null>(null)
+  const [activeTranslation, setActiveTranslation] = useState<string | null>(null)
+  const [lastLogId, setLastLogId] = useState<string | null>(null)
+  const [cameraActive, setCameraActive] = useState(false)
+  const [isHelpOpen, setIsHelpOpen] = useState(false)
+  const [isPredicting, setIsPredicting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const activeSessionRef = useRef<ApiSession | null>(null)
+
+  useEffect(() => {
+    async function loadMe() {
+      if (!api.getToken()) return
+      try {
+        const me = await api.me()
+        setUser({ isLoggedIn: true, id: me.id, email: me.email, name: me.name, role: me.role })
+      } catch {
+        api.clearToken()
+        setUser(emptyUser)
+      }
+    }
+    loadMe()
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem('signlink_autosave', String(autoSave))
+  }, [autoSave])
+
+  const loadLogs = useCallback(async () => {
+    if (!user.isLoggedIn || user.role !== 'doctor') {
+      setLogs([])
+      return
+    }
+    const data = await api.listTranslations({ limit: 100 })
+    setLogs(data.map(mapApiLog))
+  }, [user.isLoggedIn, user.role])
+
+  useEffect(() => {
+    loadLogs().catch((err) => setError(err.message))
+  }, [loadLogs])
+
+  const ensureSession = useCallback(async () => {
+    if (activeSessionRef.current) return activeSessionRef.current
+    if (session) {
+      activeSessionRef.current = session
+      return session
+    }
+    const created = await api.createSession({ title: '실시간 수어 진료' })
+    activeSessionRef.current = created
+    setSession(created)
+    return created
+  }, [session])
+
+  const saveTranslationIfNeeded = useCallback(
+    async (text: string, category: string, glossResult: string, confidence: number) => {
+      setLastLogId(null)
+      if (!autoSave || !user.isLoggedIn || user.role !== 'doctor') return
+
+      const activeSession = await ensureSession()
+      const saved = await api.createTranslation({
+        session_id: activeSession.id,
+        gloss_result: glossResult,
+        translated_text: text,
+        confidence,
+        category,
+      })
+      const mapped = mapApiLog(saved)
+      setLogs((prev) => [mapped, ...prev])
+      setLastLogId(mapped.id)
+    },
+    [autoSave, ensureSession, user.isLoggedIn, user.role],
+  )
+
+  const handleCompletedTranslation = useCallback(
+    async (text: string, category: string, glossResult = `${category} 수어 시퀀스`, confidence = 0.98) => {
+      setError(null)
+      setActiveTranslation(text)
+      try {
+        await saveTranslationIfNeeded(text, category, glossResult, confidence)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '번역 기록 저장에 실패했습니다.')
+      }
+    },
+    [saveTranslationIfNeeded],
+  )
+
+  const openTranslationSocket = useCallback(async () => {
+    if (!user.isLoggedIn || user.role !== 'doctor') {
+      setCurrentView('login')
+      setError('AI 예측을 사용하려면 의료진 계정으로 로그인해야 합니다.')
+      return false
+    }
+
+    const token = api.getToken()
+    if (!token) {
+      setCurrentView('login')
+      return false
+    }
+
+    const activeSession = await ensureSession()
+    wsRef.current?.close()
+
+    const socket = new WebSocket(`${WS_BASE}/ws/translate?token=${encodeURIComponent(token)}`)
+    wsRef.current = socket
+
+    return await new Promise<boolean>((resolve) => {
+      let resolved = false
+      const timeout = window.setTimeout(() => {
+        if (!resolved) {
+          resolved = true
+          setError('백엔드 WebSocket 연결 시간이 초과되었습니다.')
+          resolve(false)
+        }
+      }, 8000)
+
+      socket.onopen = () => {
+        socket.send(JSON.stringify({ type: 'start', session_id: activeSession.id }))
+      }
+
+      socket.onerror = () => {
+        if (!resolved) {
+          resolved = true
+          window.clearTimeout(timeout)
+          setError('백엔드 WebSocket에 연결할 수 없습니다.')
+          resolve(false)
+        }
+      }
+
+      socket.onmessage = (event) => {
+        const message = JSON.parse(event.data)
+
+        if (message.type === 'error') {
+          setError(message.message || 'WebSocket 처리 중 오류가 발생했습니다.')
+          setIsPredicting(false)
+          if (!resolved) {
+            resolved = true
+            window.clearTimeout(timeout)
+            resolve(false)
+          }
+          return
+        }
+
+        if (message.type === 'stream_started') {
+          setError(null)
+          if (!resolved) {
+            resolved = true
+            window.clearTimeout(timeout)
+            resolve(true)
+          }
+          return
+        }
+
+        if (message.type === 'translation') {
+          const words = Array.isArray(message.words) ? message.words : []
+          const text = message.text || message.gloss_result || words.join(' ') || '인식된 수어가 없습니다.'
+          setActiveTranslation(text)
+          setIsPredicting(false)
+          if (message.log_id) {
+            setLastLogId(message.log_id)
+            loadLogs().catch((err) => setError(err.message))
+          }
+        }
+      }
+    })
+  }, [ensureSession, loadLogs, user.isLoggedIn, user.role])
+
+  const handleStreamStart = async () => {
+    setIsPredicting(false)
+    return await openTranslationSocket()
+  }
+
+  const handleKeypointFrame = async (keypoints: number[]) => {
+    const socket = wsRef.current
+    const activeSession = activeSessionRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN || !activeSession) return
+    socket.send(JSON.stringify({ type: 'frame', session_id: activeSession.id, keypoints }))
+  }
+
+  const handleStreamEnd = async () => {
+    const socket = wsRef.current
+    const activeSession = activeSessionRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN || !activeSession) return
+    setIsPredicting(true)
+    socket.send(JSON.stringify({ type: 'end', session_id: activeSession.id, auto_save: autoSave }))
+  }
+
+  const handleLoginSuccess = async (email: string, password: string) => {
+    setError(null)
+    const { access_token: token } = await api.login({ email, password })
+    api.setToken(token)
+    const me = await api.me()
+    setUser({ isLoggedIn: true, id: me.id, email: me.email, name: me.name, role: me.role })
+    setAutoSave(true)
+    setCurrentView('main')
+  }
+
+  const handleRegister = async (name: string, email: string, password: string) => {
+    setError(null)
+    await api.register({ name, email, password, role: 'doctor' })
+    await handleLoginSuccess(email, password)
+  }
+
+  const handleLogout = () => {
+    wsRef.current?.close()
+    api.clearToken()
+    setUser(emptyUser)
+    setAutoSave(false)
+    setActiveTranslation(null)
+    setCameraActive(false)
+    setSession(null)
+    activeSessionRef.current = null
+    setLogs([])
+    setCurrentView('main')
+  }
+
+  const handleTriggerTranslation = async (text: string, category: string) => {
+    await handleCompletedTranslation(text, category)
+  }
+
+  const handleRetryTranslation = async () => {
+    if (lastLogId) {
+      try {
+        await api.deleteTranslation(lastLogId)
+        setLogs((prev) => prev.filter((log) => log.id !== lastLogId))
+      } catch {
+        // The history screen still allows manual cleanup if this request fails.
+      }
+      setLastLogId(null)
+    }
+    setActiveTranslation(null)
+    setCameraActive(true)
+  }
+
+  const handleDeleteLog = async (id: string) => {
+    await api.deleteTranslation(id)
+    setLogs((prev) => prev.filter((log) => log.id !== id))
+  }
+
+  const handleClearLogs = async () => {
+    await api.clearTranslations()
+    setLogs([])
+  }
+
+  const handleAddManualLog = async (text: string, category: string) => {
+    const saved = await api.createTranslation({
+      translated_text: text,
+      gloss_result: '직접 입력',
+      confidence: 1,
+      category,
+    })
+    setLogs((prev) => [mapApiLog(saved), ...prev])
+  }
+
+  return (
+    <div className="min-h-screen bg-bg-base text-on-surface flex flex-col justify-between antialiased selection:bg-primary-light selection:text-primary font-sans">
+      <Header
+        user={user}
+        onLoginClick={() => setCurrentView('login')}
+        onLogoutClick={handleLogout}
+        autoSave={autoSave}
+        onAutoSaveToggle={() => user.isLoggedIn && setAutoSave((value) => !value)}
+        onHelpClick={() => setIsHelpOpen(true)}
+        onLogoClick={() => setCurrentView('main')}
+      />
+
+      <main className="flex-1 w-full flex items-center justify-center p-4 sm:p-6 md:p-8">
+        <div className="w-full max-w-7xl">
+          {error && (
+            <div className="max-w-3xl mx-auto mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">
+              {error}
+            </div>
+          )}
+
+          <AnimatePresence mode="wait">
+            {currentView === 'main' && (
+              <motion.div
+                key="main-view"
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                transition={{ duration: 0.25 }}
+                className="w-full flex flex-col items-center gap-6"
+              >
+                <div className="w-full max-w-3xl flex flex-col sm:flex-row sm:items-center sm:justify-between px-4 py-3 bg-white border border-neutral-100 rounded-xl shadow-2xs gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-full bg-secondary-container/10 flex items-center justify-center text-secondary">
+                      <Activity className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <span className="text-sm font-bold text-on-surface leading-none">분당서울대병원 EMR 연동 솔루션</span>
+                      <p className="text-xs text-neutral-400 font-medium mt-1">
+                        클라이언트 키포인트 추출, 백엔드 중계, AI 서버 예측 구조로 동작합니다.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs bg-neutral-150 border border-neutral-250 text-neutral-600 font-bold px-2 py-0.5 rounded-sm">
+                      {logs.length}개 누적 번역
+                    </span>
+                    <button
+                      onClick={() => setIsHelpOpen(true)}
+                      className="text-xs text-secondary hover:underline flex items-center gap-0.5 font-bold cursor-pointer"
+                    >
+                      <Info className="w-3.5 h-3.5" />
+                      도움말 가이드
+                    </button>
+                  </div>
+                </div>
+
+                <div className="w-full max-w-3xl flex flex-col items-center">
+                  <CameraView
+                    isActive={cameraActive}
+                    onToggleActive={() => {
+                      setCameraActive((active) => !active)
+                      setActiveTranslation(null)
+                    }}
+                    onTriggerTranslation={handleTriggerTranslation}
+                    onStreamStart={handleStreamStart}
+                    onKeypointFrame={handleKeypointFrame}
+                    onStreamEnd={handleStreamEnd}
+                    isPredicting={isPredicting}
+                  />
+
+                  <TranslationResult
+                    text={activeTranslation}
+                    onViewHistory={() => setCurrentView(user.isLoggedIn ? 'history' : 'login')}
+                    isLoggedIn={user.isLoggedIn}
+                    autoSave={autoSave}
+                    onRetry={handleRetryTranslation}
+                  />
+                </div>
+              </motion.div>
+            )}
+
+            {currentView === 'history' && (
+              <HistoryView
+                key="history-view"
+                logs={logs}
+                onBack={() => setCurrentView('main')}
+                onClearLogs={handleClearLogs}
+                onDeleteLog={handleDeleteLog}
+                onAddManualLog={handleAddManualLog}
+              />
+            )}
+
+            {(currentView === 'login' || currentView === 'register') && (
+              <LoginView
+                key="login-view"
+                mode={currentView}
+                onLoginSuccess={handleLoginSuccess}
+                onRegister={handleRegister}
+                onSwitchMode={() => setCurrentView(currentView === 'login' ? 'register' : 'login')}
+                onBackToMain={() => setCurrentView('main')}
+              />
+            )}
+          </AnimatePresence>
+        </div>
+      </main>
+
+      <footer className="w-full py-4 border-t border-neutral-250 bg-white text-center text-[11px] text-neutral-400 font-medium">
+        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2.5">
+          <p>© 2026 SignLink. All rights reserved.</p>
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+              EMR 보안서버 수어망 대기 중
+            </span>
+            <span>|</span>
+            <span className="text-[10px] bg-neutral-100 text-neutral-500 border border-neutral-200 px-1.5 py-0.5 rounded">
+              Atkinson Accessibility Standards Approved
+            </span>
+          </div>
+        </div>
+      </footer>
+
+      <InstructionsModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
+    </div>
+  )
+}
