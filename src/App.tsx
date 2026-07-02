@@ -1,12 +1,7 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { TranslationLog, UserState, ViewState } from './types';
-import { INITIAL_TRANSLATION_LOGS } from './data';
+import { INITIAL_TRANSLATION_LOGS, GESTURE_PRESETS } from './data';
 import { Header } from './components/Header';
 import { CameraView } from './components/CameraView';
 import { TranslationResult } from './components/TranslationResult';
@@ -38,7 +33,14 @@ export default function App() {
   const [logs, setLogs] = useState<TranslationLog[]>(() => {
     const saved = localStorage.getItem('signlink_logs');
     if (saved) {
-      try { return JSON.parse(saved); } catch (e) { /* ignore */ }
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0 && ('id' in parsed[0] || 'text' in parsed[0])) {
+          // Old schema detected, reset to new initial logs
+          return INITIAL_TRANSLATION_LOGS;
+        }
+        return parsed;
+      } catch (e) { /* ignore */ }
     }
     return INITIAL_TRANSLATION_LOGS;
   });
@@ -72,16 +74,26 @@ export default function App() {
   }, [logs]);
 
   // Handle manual/automatic save insertions
-  const handleAddNewTranslationLog = (text: string, category: string) => {
-    // Current live time format: 2026-05-29 (from metadata)
+  const handleAddNewTranslationLog = (
+    text: string, 
+    category: string, 
+    pId?: string, 
+    gloss?: string, 
+    conf?: number
+  ) => {
     const now = new Date();
-    const pad = (num: number) => String(num).padStart(2, '0');
-    const timestampStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    const isoString = now.toISOString();
+
+    const maxLogId = logs.reduce((max, log) => log.log_id > max ? log.log_id : max, 0);
 
     const newLogItem: TranslationLog = {
-      id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      text: text,
-      timestamp: timestampStr,
+      log_id: maxLogId + 1,
+      medical_id: user.isLoggedIn && user.userId ? user.userId : 1001,
+      patient_id: pId || 'none',
+      input_time: isoString,
+      gloss_result: gloss || `${category} 제스처`,
+      translated_text: text,
+      confidence: conf !== undefined ? conf : Math.round(85 + Math.random() * 14),
       category: category,
       isCustom: true
     };
@@ -95,6 +107,7 @@ export default function App() {
       isLoggedIn: true,
       email: email,
       name: name,
+      userId: 1001
     });
     // Auto Save is automatically pre-toggles to "ON" upon clinic login as in the design!
     setAutoSave(true);
@@ -109,25 +122,34 @@ export default function App() {
   };
 
   // Active translation dispatcher from simulated gesture selection
-  const handleTriggerTranslation = (text: string, category: string) => {
+  const handleTriggerTranslation = (text: string, category: string, gloss?: string, conf?: number) => {
     setActiveTranslation(text);
 
     // If auto-save is enabled on translation, stream into the history state instantly!
     if (autoSave) {
-      handleAddNewTranslationLog(text, category);
+      let derivedGloss = gloss;
+      if (!derivedGloss) {
+        const preset = GESTURE_PRESETS.find(p => p.translationText === text);
+        derivedGloss = preset ? preset.gestureName : `${category} 인식`;
+      }
+      handleAddNewTranslationLog(text, category, 'none', derivedGloss, conf);
     }
   };
 
-  const handleDeleteLog = (id: string) => {
-    setLogs(prev => prev.filter(log => log.id !== id));
+  const handleDeleteLog = (logId: number) => {
+    setLogs(prev => prev.filter(log => log.log_id !== logId));
   };
 
   const handleClearLogs = () => {
     setLogs([]);
   };
 
-  const handleAddManualLog = (text: string, category: string) => {
-    handleAddNewTranslationLog(text, category);
+  const handleAddManualLog = (text: string, category: string, pId?: string) => {
+    handleAddNewTranslationLog(text, category, pId || 'none', '수동 입력', 100);
+  };
+
+  const handleUpdatePatientId = (logId: number, patientId: string) => {
+    setLogs(prev => prev.map(log => log.log_id === logId ? { ...log, patient_id: patientId } : log));
   };
 
   return (
@@ -176,8 +198,8 @@ export default function App() {
                   </div>
                   
                   {/* Interactive Status banner */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs bg-neutral-150 border border-neutral-250 text-neutral-600 font-bold px-2 py-0.5 rounded-sm">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="text-xs bg-neutral-150 border border-neutral-250 text-neutral-600 font-bold px-2.5 py-1.5 rounded-sm">
                       {logs.length}개 누적 번역
                     </span>
                     <button
@@ -234,6 +256,7 @@ export default function App() {
                   onClearLogs={handleClearLogs}
                   onDeleteLog={handleDeleteLog}
                   onAddManualLog={handleAddManualLog}
+                  onUpdatePatientId={handleUpdatePatientId}
                 />
               ) : (
                 <LoginView

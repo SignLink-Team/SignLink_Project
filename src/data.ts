@@ -1,57 +1,84 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 import { TranslationLog, GesturePreset } from './types';
 
 export const INITIAL_TRANSLATION_LOGS: TranslationLog[] = [
   {
-    id: 'log-1',
-    text: '머리가 아파서 왔습니다.',
-    timestamp: '2026-05-29 14:32',
+    log_id: 1,
+    medical_id: 1001,
+    patient_id: 'none',
+    input_time: '2026-05-29T14:32:00.000Z',
+    gloss_result: '머리 아프다 심하다',
+    translated_text: '머리가 아파서 왔습니다.',
+    confidence: 96,
     category: '두통'
   },
   {
-    id: 'log-2',
-    text: '일주일 전부터 기침이 계속 나요.',
-    timestamp: '2026-05-29 13:15',
+    log_id: 2,
+    medical_id: 1001,
+    patient_id: 'none',
+    input_time: '2026-05-29T13:15:00.000Z',
+    gloss_result: '기침 일주일 계속',
+    translated_text: '일주일 전부터 기침이 계속 나요.',
+    confidence: 92,
     category: '호흡기'
   },
   {
-    id: 'log-3',
-    text: '어제부터 열이 나고 몸이 쑤셔요.',
-    timestamp: '2026-05-28 16:48',
+    log_id: 3,
+    medical_id: 1001,
+    patient_id: 'none',
+    input_time: '2026-05-28T16:48:00.000Z',
+    gloss_result: '열 나다 몸 쑤시다',
+    translated_text: '어제부터 열이 나고 몸이 쑤셔요.',
+    confidence: 94,
     category: '전신/감기'
   },
   {
-    id: 'log-4',
-    text: '배가 너무 아파서 잠을 못 잤어요.',
-    timestamp: '2026-05-28 10:20',
+    log_id: 4,
+    medical_id: 1001,
+    patient_id: 'none',
+    input_time: '2026-05-28T10:20:00.000Z',
+    gloss_result: '배 너무 아프다 잠 못 자다',
+    translated_text: '배가 너무 아파서 잠을 못 잤어요.',
+    confidence: 89,
     category: '소화기'
   },
   {
-    id: 'log-5',
-    text: '오른쪽 팔에 통증이 있습니다.',
-    timestamp: '2026-05-27 15:05',
+    log_id: 5,
+    medical_id: 1001,
+    patient_id: 'none',
+    input_time: '2026-05-27T15:05:00.000Z',
+    gloss_result: '오른쪽 팔 아프다',
+    translated_text: '오른쪽 팔에 통증이 있습니다.',
+    confidence: 91,
     category: '근골격계'
   },
   {
-    id: 'log-6',
-    text: '약을 먹고 나서 두드러기가 났어요.',
-    timestamp: '2026-05-27 11:30',
+    log_id: 6,
+    medical_id: 1001,
+    patient_id: 'none',
+    input_time: '2026-05-27T11:30:00.000Z',
+    gloss_result: '약 먹다 두드러기 나다',
+    translated_text: '약을 먹고 나서 두드러기가 났어요.',
+    confidence: 85,
     category: '알레르기'
   },
   {
-    id: 'log-7',
-    text: '목이 부어서 음식을 삼키기 어려워요.',
-    timestamp: '2026-05-26 09:55',
+    log_id: 7,
+    medical_id: 1001,
+    patient_id: 'none',
+    input_time: '2026-05-26T09:55:00.000Z',
+    gloss_result: '목 붓다 음식 삼키다 어렵다',
+    translated_text: '목이 부어서 음식을 삼키기 어려워요.',
+    confidence: 95,
     category: '이비인후과'
   },
   {
-    id: 'log-8',
-    text: '허리를 삐끗한 것 같아요.',
-    timestamp: '2026-05-26 08:40',
+    log_id: 8,
+    medical_id: 1001,
+    patient_id: 'none',
+    input_time: '2026-05-26T08:40:00.000Z',
+    gloss_result: '허리 삐끗',
+    translated_text: '허리를 삐끗한 것 같아요.',
+    confidence: 88,
     category: '근골격계'
   }
 ];
