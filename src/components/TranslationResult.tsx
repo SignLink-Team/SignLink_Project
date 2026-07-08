@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Languages,
@@ -11,6 +11,8 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { UnkSolver } from './UnkSolver';
+import { useTTS } from '../hooks/useTTS';
+import { TTSToggle } from './TTSToggle';
 
 interface TranslationResultProps {
   text: string | null;
@@ -50,6 +52,27 @@ export const TranslationResult: React.FC<TranslationResultProps> = ({
     setCustomText('');
   };
 
+  const { speak, stop, isSpeaking } = useTTS();
+  const [ttsEnabled, setTtsEnabled] = useState(false);
+
+  useEffect(() => {
+    if (ttsEnabled && text) {
+      speak(text);
+    }
+  }, [text, ttsEnabled]);
+
+  const handleToggle = () => {
+    setTtsEnabled(prev => {
+      const next = !prev;
+      if (!next) stop();
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    return () => window.speechSynthesis.cancel();
+  }, []);
+
   return (
     <div className="w-full mt-6">
       {/* Title Header Block */}
@@ -57,6 +80,7 @@ export const TranslationResult: React.FC<TranslationResultProps> = ({
         <div className="flex items-center gap-2">
           <Languages className="w-5 h-5 text-brand-green" />
           <h2 className="text-lg font-bold font-sans text-on-surface">번역 결과</h2>
+          <TTSToggle enabled={ttsEnabled} onToggle={handleToggle} isSpeaking={isSpeaking} />
         </div>
       </div>
 
