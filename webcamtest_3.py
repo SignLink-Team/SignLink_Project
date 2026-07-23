@@ -1,0 +1,330 @@
+"""
+webcam_nms.py
+-------------
+웹캠 실시간 비수지 추론 코드
+
+학습 전처리와 완전히 동일한 방식:
+    - FaceMesh 468점, confidence 0.3
+    - prev_landmarks 대체
+    - gaussian_filter1d (sigma=1.0)
+    - 슬라이딩 윈도우 방식으로 실시간 추론
+
+사용법:
+    python webcam_nms.py
+    python webcam_nms.py --camera 1       # 카메라 인덱스 변경
+    python webcam_nms.py --window 60      # 윈도우 크기 변경 (프레임 수)
+    python webcam_nms.py --save output.mp4  # 결과 저장
+"""
+
+import argparse
+import collections
+import numpy as np
+import torch
+import torch.nn as nn
+import cv2
+import mediapipe as mp
+import math
+from scipy.ndimage import gaussian_filter1d
+
+from nonmanual_features import extract_nonmanual
+
+# ---------------------------------------------------------------------------
+# 설정
+# ---------------------------------------------------------------------------
+torch.serialization.add_safe_globals([np.core.multiarray.scalar])
+torch.serialization.add_safe_globals([np.dtype])
+
+CKPT_PATH = r"C:\ai\best_nms_finetune_5.pt"
+
+NMS_KEYS  = ["Mo1", "Mmo", "Mctr", "Ci", "Ebu", "EBf", "Hno", "Hs"]
+
+# 키별 threshold
+KEY_THRESHOLD = {
+    "Mo1":  0.42,
+    "Mmo":  0.42,
+    "Mctr": 0.42,
+    "Ci":   0.40,
+    "Ebu":  0.45,
+    "EBf":  0.52,
+    "Hno":  0.50,
+    "Hs":   0.40,
+}
+
+# 키별 색상 (BGR)
+KEY_COLORS = {
+    "Mo1":  (50,  100, 255),
+    "Mmo":  (50,  180, 255),
+    "Mctr": (100, 220, 255),
+    "Ci":   (255, 200,  50),
+    "Ebu":  (150, 255,  50),
+    "EBf":  (255, 180, 100),
+    "Hno":  (255,  80, 200),
+    "Hs":   (150,  80, 255),
+}
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+# ---------------------------------------------------------------------------
+# 모델
+# ---------------------------------------------------------------------------
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=4000):
+        super().__init__()
+
+        pe = torch.zeros(max_len, d_model)
+
+        position = torch.arange(0, max_len).unsqueeze(1).float()
+
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float()
+            * (-math.log(10000.0) / d_model)
+        )
+
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+
+        self.register_buffer("pe", pe.unsqueeze(0))
+
+    def forward(self, x):
+        return x + self.pe[:, :x.size(1)]
+    
+class NMSClassifier(nn.Module):
+    def __init__(self, input_dim, d_model, nhead, num_layers, num_labels, dropout):
+        super().__init__()
+
+        self.input_proj = nn.Linear(input_dim, d_model)
+
+        self.pos_encoding = PositionalEncoding(d_model)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=d_model * 4,
+            dropout=dropout,
+            batch_first=True,
+        )
+
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers,
+        )
+
+        self.head = nn.Linear(d_model, num_labels)
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, src_key_padding_mask=None):
+
+        x = self.dropout(self.input_proj(x))
+
+        x = self.pos_encoding(x)
+
+        x = self.encoder(
+            x,
+            src_key_padding_mask=src_key_padding_mask,
+        )
+
+        return self.head(x)
+
+
+def load_model():
+    ckpt = torch.load(
+        CKPT_PATH,
+        map_location=DEVICE,
+        weights_only=False
+    )
+    cfg   = ckpt["cfg"]
+    model = NMSClassifier(
+        input_dim  = cfg["input_dim"],
+        d_model    = cfg["d_model"],
+        nhead      = cfg["nhead"],
+        num_layers = cfg["num_layers"],
+        num_labels = len(NMS_KEYS),
+        dropout    = 0.0,          # 추론 시 dropout 0
+    ).to(DEVICE)
+    model.load_state_dict(ckpt["model"])
+    model.eval()
+    print(f"모델 로드: epoch {ckpt['epoch']}, macro_F1 {ckpt['macro_f1']:.4f}")
+    return model
+
+
+# ---------------------------------------------------------------------------
+# 추론
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def infer(model, feat_window):
+    """
+    feat_window: list of np.ndarray (1404,)
+    반환: np.ndarray (8,) — 윈도우 마지막 프레임의 sigmoid 확률
+    """
+    seq    = gaussian_filter1d(np.array(feat_window, dtype=np.float32), sigma=1.0, axis=0)
+    x      = torch.from_numpy(seq).unsqueeze(0).to(DEVICE)  # (1, T, 1404)
+    logits = model(x)                                         # (1, T, 8)
+    probs  = torch.sigmoid(logits).squeeze(0).cpu().numpy()   # (T, 8)
+    return probs[-1]  # 마지막 프레임 기준 확률
+
+
+# ---------------------------------------------------------------------------
+# 오버레이 렌더링
+# ---------------------------------------------------------------------------
+
+def draw_overlay(frame, probs, smoothed_probs):
+    """
+    frame         : 원본 프레임
+    probs         : 현재 프레임 확률 (8,)
+    smoothed_probs: 시간 평활화된 확률 (8,)  — 막대 표시용
+    """
+    h, w = frame.shape[:2]
+
+    # 좌측 패널 (비수지 상태)
+    panel_w = 220
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (panel_w, h), (20, 20, 20), -1)
+    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+
+    cv2.putText(frame, "Non-Manual", (8, 22),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1, cv2.LINE_AA)
+    cv2.line(frame, (0, 28), (panel_w, 28), (80, 80, 80), 1)
+
+    for i, key in enumerate(NMS_KEYS):
+        thr     = KEY_THRESHOLD[key]
+        prob    = smoothed_probs[i]
+        active  = prob >= thr
+        color   = KEY_COLORS[key] if active else (80, 80, 80)
+        y       = 44 + i * 28
+
+        # 확률 바
+        bar_max = panel_w - 16
+        bar_w   = int(prob * bar_max)
+        cv2.rectangle(frame, (8, y), (8 + bar_max, y + 16), (50, 50, 50), -1)
+        cv2.rectangle(frame, (8, y), (8 + bar_w,   y + 16), color, -1)
+
+        # 키 이름
+        label = f"{key}  {prob:.2f}"
+        cv2.putText(frame, label, (12, y + 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                    (255, 255, 255) if active else (150, 150, 150),
+                    1, cv2.LINE_AA)
+
+        # 활성화 표시
+        if active:
+            cv2.circle(frame, (panel_w - 10, y + 8), 5, color, -1)
+
+    # 우하단 안내
+    cv2.putText(frame, "q: quit  r: reset", (w - 160, h - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1, cv2.LINE_AA)
+
+    return frame
+
+
+# ---------------------------------------------------------------------------
+# 메인
+# ---------------------------------------------------------------------------
+
+def run(camera_idx=1, window_size=60, save_path=None):
+    model = load_model()
+
+    cap = cv2.VideoCapture(1)
+    if not cap.isOpened():
+        print(f"카메라 열기 실패 (index: {camera_idx})")
+        return
+
+    fps    = cap.get(cv2.CAP_PROP_FPS) or 30
+    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print(f"카메라: {width}×{height} @ {fps:.0f}fps")
+
+    writer = None
+    if save_path:
+        writer = cv2.VideoWriter(
+            save_path, cv2.VideoWriter_fourcc(*'mp4v'),
+            fps, (width, height)
+        )
+
+    # 슬라이딩 윈도우 버퍼
+    feat_buffer   = collections.deque(maxlen=window_size)
+    prev_landmarks = None
+
+    # 시간 평활화용 확률 버퍼 (지수 이동 평균)
+    smooth_probs  = np.zeros(len(NMS_KEYS), dtype=np.float32)
+    alpha         = 0.3  # 평활화 계수 (낮을수록 부드러움)
+
+    frame_count = 0
+
+    with mp.solutions.face_mesh.FaceMesh(
+        static_image_mode=False,
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.3,
+        min_tracking_confidence=0.3,
+    ) as face_mesh:
+
+        print("웹캠 실시간 추론 시작 (q: 종료, r: 버퍼 리셋)")
+
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            frame_count += 1
+
+            # 전처리
+            resized = cv2.resize(frame, (640, int(640 * frame.shape[0] / frame.shape[1])),
+                                  interpolation=cv2.INTER_LINEAR)
+            results = face_mesh.process(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB))
+
+            if results.multi_face_landmarks:
+                face_landmarks = results.multi_face_landmarks[0]
+                prev_landmarks = face_landmarks
+            else:
+                face_landmarks = prev_landmarks
+
+            feat = extract_nonmanual(face_landmarks, resized.shape)
+            feat_buffer.append(feat)
+
+            # 추론 (버퍼가 최소 10프레임 쌓이면 시작)
+            if len(feat_buffer) >= 10:
+                probs        = infer(model, list(feat_buffer))
+                smooth_probs = alpha * probs + (1 - alpha) * smooth_probs
+            else:
+                probs = np.zeros(len(NMS_KEYS), dtype=np.float32)
+
+            # 오버레이 렌더링
+            frame = draw_overlay(frame, probs, smooth_probs)
+
+            # FPS 표시
+            cv2.putText(frame, f"buf:{len(feat_buffer)}/{window_size}",
+                        (230, 20), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.4, (150, 150, 150), 1, cv2.LINE_AA)
+
+            cv2.imshow("NMS Webcam", frame)
+
+            if writer:
+                writer.write(frame)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == ord('r'):
+                feat_buffer.clear()
+                smooth_probs = np.zeros(len(NMS_KEYS), dtype=np.float32)
+                print("버퍼 리셋")
+
+    cap.release()
+    if writer:
+        writer.release()
+        print(f"저장 완료: {save_path}")
+    cv2.destroyAllWindows()
+    print("종료")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--camera", type=int,  default=0,    help="카메라 인덱스 (기본: 0)")
+    parser.add_argument("--window", type=int,  default=60,   help="슬라이딩 윈도우 프레임 수 (기본: 60)")
+    parser.add_argument("--save",   type=str,  default=None, help="결과 영상 저장 경로")
+    args = parser.parse_args()
+    run(camera_idx=args.camera, window_size=args.window, save_path=args.save)
