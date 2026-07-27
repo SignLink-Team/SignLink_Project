@@ -35,11 +35,7 @@ export const Header = ({
             whileTap={{ scale: 0.95 }}
             className="w-10 h-10 rounded-xl overflow-hidden shadow-md shadow-secondary/15"
           >
-            <img
-              src={signlinkIcon}
-              alt="SignLink Logo"
-              className="w-full h-full object-cover scale-[1.18]"
-            />
+            <img src={signlinkIcon} alt="SignLink Logo" className="w-full h-full object-cover scale-[1.18]" />
           </motion.div>
           <div>
             <h1 className="text-2xl font-bold font-sans text-on-surface tracking-tight flex items-center gap-1.5 leading-none">
@@ -71,9 +67,7 @@ export const Header = ({
                 <span className="text-sm font-semibold text-on-surface font-hyper">
                   {user.name || 'Name'} 전문의
                 </span>
-                <span className="text-xs text-primary/80 font-medium">
-                  {user.email}
-                </span>
+                <span className="text-xs text-primary/80 font-medium">{user.email}</span>
               </div>
               <motion.button
                 whileHover={{ scale: 1.02 }}
@@ -102,11 +96,8 @@ export const Header = ({
             whileHover={user.isLoggedIn ? { scale: 1.03 } : { scale: 1 }}
             whileTap={user.isLoggedIn ? { scale: 0.97 } : { scale: 1 }}
             onClick={() => {
-              if (user.isLoggedIn) {
-                onAutoSaveToggle()
-              } else {
-                alert('자동 저장 기능은 의료진 로그인 후 사용할 수 있습니다.')
-              }
+              if (user.isLoggedIn) onAutoSaveToggle()
+              else alert('자동 저장 기능은 의료진 로그인 후 사용할 수 있습니다.')
             }}
             className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-sm font-bold font-hyper tracking-wide transition-all duration-300 shadow-sm border ${
               !user.isLoggedIn

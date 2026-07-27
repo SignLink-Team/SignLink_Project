@@ -32,11 +32,8 @@ export const LoginView = ({
     setIsSubmitting(true)
 
     try {
-      if (isRegister) {
-        await onRegister(name.trim(), email.trim(), password)
-      } else {
-        await onLoginSuccess(email.trim(), password)
-      }
+      if (isRegister) await onRegister(name.trim(), email.trim(), password)
+      else await onLoginSuccess(email.trim(), password)
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : '인증 처리에 실패했습니다.')
     } finally {
@@ -59,7 +56,6 @@ export const LoginView = ({
           <div className="w-14 h-14 rounded-full bg-secondary flex items-center justify-center text-white shadow-md">
             <Heart className="w-6 h-6 text-white fill-white/20 animate-pulse" />
           </div>
-
           <div className="absolute -bottom-2 capitalize">
             <span className="bg-white border border-neutral-200 text-secondary text-[11px] font-extrabold px-2.5 py-1 rounded-full flex items-center gap-1 leading-none shadow-2xs font-hyper uppercase tracking-wider">
               <ShieldCheck className="w-3 h-3" />
@@ -72,7 +68,7 @@ export const LoginView = ({
           {isRegister ? 'SignLink 계정 생성' : '의료진 로그인'}
         </h2>
         <p className="text-sm text-neutral-500 mt-1.5 font-semibold text-center max-w-sm leading-relaxed">
-          의료 수어 번역 기록 조회 및 EMR 자동 연동을 위해 의료진 계정으로 접속하세요.
+          의료 수어 번역 기록 조회 및 EMR 연동을 위해 의료진 계정으로 접속하세요.
         </p>
 
         <div className="w-full bg-white border border-neutral-100 rounded-2xl p-6 md:p-8 shadow-xs mt-8">
@@ -130,7 +126,6 @@ export const LoginView = ({
                   placeholder="8자 이상"
                   className="w-full pl-3.5 pr-10 py-2.5 bg-neutral-50/50 hover:bg-neutral-50 focus:bg-white border border-neutral-250 focus:border-secondary focus:ring-1 focus:ring-secondary rounded-lg text-sm font-medium outline-none transition-all duration-150 text-on-surface"
                 />
-
                 <button
                   type="button"
                   onClick={() => setShowPassword((value) => !value)}
@@ -172,10 +167,7 @@ export const LoginView = ({
               {isRegister ? '이미 계정이 있나요? 로그인' : '계정이 없나요? 회원가입'}
             </button>
             {!isRegister && (
-              <button
-                type="button"
-                className="text-xs font-semibold text-neutral-450 hover:text-primary transition-colors cursor-pointer"
-              >
+              <button type="button" className="text-xs font-semibold text-neutral-450 hover:text-primary transition-colors cursor-pointer">
                 비밀번호 찾기
               </button>
             )}

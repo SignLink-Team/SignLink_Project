@@ -16,18 +16,19 @@ class TranslationCreate(BaseModel):
     category: str = CATEGORY_DEFAULT
 
 
-class TranslationPublic(BaseModel):
-    id: str
-    log_id: str
-    medical_id: str
-    session_id: str | None = None
+class TranslationUpdate(BaseModel):
     patient_id: str | None = None
+
+
+class TranslationPublic(BaseModel):
+    log_id: int
+    medical_id: int
+    patient_id: str = ""
     gloss_result: str = ""
     translated_text: str
-    confidence: float | None = None
+    confidence: float = 0
     category: str = CATEGORY_DEFAULT
     input_time: datetime
-    timestamp: datetime
 
 
 class LandmarksFrame(BaseModel):
@@ -50,7 +51,7 @@ class WSTranslationMessage(BaseModel):
     confidence: float | None = None
     session_id: str | None = None
     saved: bool = False
-    log_id: str | None = None
+    log_id: int | None = None
 
 
 class WSErrorMessage(BaseModel):
@@ -66,15 +67,12 @@ class WSConnectedMessage(BaseModel):
 def translation_document_to_public(doc: dict) -> TranslationPublic:
     input_time = doc.get("input_time") or doc.get("timestamp") or datetime.now(timezone.utc)
     return TranslationPublic(
-        id=str(doc["_id"]),
-        log_id=str(doc.get("_id")),
-        medical_id=doc.get("medical_id") or doc.get("doctor_id", ""),
-        session_id=doc.get("session_id"),
-        patient_id=doc.get("patient_id"),
+        log_id=int(doc.get("log_id", 0)),
+        medical_id=int(doc.get("medical_id", 0)),
+        patient_id=doc.get("patient_id") or "none",
         gloss_result=doc.get("gloss_result", ""),
         translated_text=doc["translated_text"],
-        confidence=doc.get("confidence"),
+        confidence=float(doc.get("confidence") or 0),
         category=doc.get("category", CATEGORY_DEFAULT),
         input_time=input_time,
-        timestamp=input_time,
     )

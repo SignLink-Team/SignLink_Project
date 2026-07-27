@@ -19,6 +19,7 @@ async def create_session(
     database = get_database()
     doc = {
         "doctor_id": current_user["id"],
+        "medical_id": current_user.get("medical_id"),
         "patient_id": payload.patient_id,
         "title": payload.title,
         "status": "active",

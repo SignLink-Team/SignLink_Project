@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import json
+import os
 import sys
 import tempfile
 from datetime import datetime
@@ -40,6 +41,7 @@ if str(MODEL_DIR) not in sys.path:
   sys.path.insert(0, str(MODEL_DIR))
 
 from model import SignLanguageModel  # noqa: E402
+from llm_client import LLM_TIMEOUT_SECONDS, translate_gloss  # noqa: E402
 from preprocess import apply_motion_derivatives, extract_normalized_keypoints  # noqa: E402
 
 HIDDEN_DIM = 512
@@ -185,10 +187,36 @@ class InferenceEngine:
       "confidence": confidence,
       "frame_count": frame_count,
       "device": str(self.device),
+      "translation_candidates": [],
     }
 
 
 engine = InferenceEngine()
+
+
+async def enrich_with_llm(result: dict[str, Any]) -> dict[str, Any]:
+  words = result.get("words") or []
+  gloss_result = result.get("gloss_result") or " ".join(words)
+  confidence = float(result.get("confidence") or 0)
+  llm_result = await translate_gloss(words, gloss_result, confidence)
+  enriched = {**result}
+  enriched["text"] = llm_result["text"]
+  enriched["translated_text"] = llm_result["text"]
+  enriched["translation_candidates"] = llm_result["translation_candidates"]
+  enriched["llm_used"] = llm_result["llm_used"]
+  enriched["llm_error"] = llm_result["llm_error"]
+  print(
+    "[ai-llm] result",
+    {
+      "llm_used": enriched["llm_used"],
+      "llm_error": enriched["llm_error"],
+      "gloss_result": gloss_result,
+      "text": enriched["text"],
+      "candidate_count": len(enriched["translation_candidates"]),
+    },
+    flush=True,
+  )
+  return enriched
 
 
 def extract_video_keypoints(video_path: Path) -> np.ndarray:
@@ -244,6 +272,9 @@ async def health() -> dict[str, Any]:
     "device": str(engine.device),
     "num_classes": engine.num_classes,
     "model_path": str(MODEL_PATH),
+    "llm_model": os.getenv("SIGNLINK_LLM_MODEL", "Qwen/Qwen2.5-3B-Instruct"),
+    "llm_base_url": os.getenv("SIGNLINK_LLM_BASE_URL", ""),
+    "llm_timeout_seconds": LLM_TIMEOUT_SECONDS,
   }
 
 
@@ -251,7 +282,8 @@ async def health() -> dict[str, Any]:
 async def predict_http(body: PredictRequest) -> dict[str, Any]:
   if body.features is not None:
     features = np.asarray(body.features, dtype=np.float32)
-    return await asyncio.to_thread(engine.predict_raw_features, features)
+    result = await asyncio.to_thread(engine.predict_raw_features, features)
+    return await enrich_with_llm(result)
   return {
     "type": "prediction",
     "text": "",
@@ -292,6 +324,7 @@ async def predict_websocket(websocket: WebSocket) -> None:
         print(f"[ai] stream ended. total frames: {len(frame_buffer)}", flush=True)
         features = np.asarray(frame_buffer, dtype=np.float32)
         result = await asyncio.to_thread(engine.predict_raw_features, features, True)
+        result = await enrich_with_llm(result)
         await websocket.send_json(result)
         frame_buffer = []
         continue
@@ -305,6 +338,7 @@ async def predict_websocket(websocket: WebSocket) -> None:
           temp_path = Path(temp_file.name)
 
         result = await asyncio.to_thread(engine.predict_video, temp_path)
+        result = await enrich_with_llm(result)
         await websocket.send_json(result)
         continue
 
@@ -312,6 +346,7 @@ async def predict_websocket(websocket: WebSocket) -> None:
         payload = decode_data_url_base64(message["data_base64"])
         features = np.load(io.BytesIO(payload))
         result = await asyncio.to_thread(engine.predict_raw_features, features, True)
+        result = await enrich_with_llm(result)
         await websocket.send_json(result)
         continue
 

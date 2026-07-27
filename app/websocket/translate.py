@@ -10,6 +10,7 @@ from app.database import get_database
 from app.models.translation import WSErrorMessage, WSTranslationMessage
 from app.routers.translations import infer_category
 from app.services.ai_client import AIServerError, AIStreamClient, predict_sign
+from app.services.counters import next_sequence
 
 router = APIRouter(tags=["websocket"])
 
@@ -163,6 +164,8 @@ async def translate_websocket(
                 )
                 confidence = ai_result.get("confidence")
                 auto_save = data.get("auto_save", True)
+                translation_candidates = ai_result.get("translation_candidates") or ai_result.get("candidates") or []
+                requires_review = bool(translation_candidates) or "unk" in f"{translated_text} {gloss_result}".lower()
                 print(
                     "[backend] AI result",
                     {
@@ -171,40 +174,51 @@ async def translate_websocket(
                         "words": words,
                         "text": translated_text,
                         "confidence": confidence,
+                        "llm_used": ai_result.get("llm_used"),
+                        "llm_error": ai_result.get("llm_error"),
+                        "translation_candidates": len(translation_candidates),
                     },
                     flush=True,
                 )
 
                 saved_log_id = None
-                if auto_save:
+                if auto_save and not requires_review:
                     database = get_database()
+                    saved_log_id = await next_sequence("translation_log_id", 1)
+                    medical_id = active_consultation.get("medical_id")
+                    if not medical_id:
+                        doctor = await database.user.find_one({"_id": ObjectId(active_consultation.get("doctor_id"))})
+                        medical_id = int(doctor.get("medical_id", 0)) if doctor else 0
                     result = await database.translation_log.insert_one(
                         {
-                            "medical_id": active_consultation.get("doctor_id"),
+                            "log_id": saved_log_id,
+                            "medical_id": medical_id,
                             "doctor_id": active_consultation.get("doctor_id"),
                             "session_id": session_id,
-                            "patient_id": active_consultation.get("patient_id"),
+                            "patient_id": active_consultation.get("patient_id") or "none",
                             "input_time": datetime.now(timezone.utc),
                             "gloss_result": gloss_result,
                             "translated_text": translated_text,
                             "confidence": confidence,
                             "category": infer_category(translated_text),
-                            "frame_count": ai_result.get("frame_count"),
-                            "npy_path": ai_result.get("npy_path"),
+                            "translation_candidates": translation_candidates,
                         }
                     )
-                    saved_log_id = str(result.inserted_id)
 
                 response = WSTranslationMessage(
                     text=translated_text,
                     confidence=confidence,
                     session_id=session_id,
-                    saved=auto_save,
+                    saved=auto_save and not requires_review,
                     log_id=saved_log_id,
                 ).model_dump()
                 response["words"] = words
                 response["gloss_result"] = gloss_result
                 response["frame_count"] = ai_result.get("frame_count")
+                response["translation_candidates"] = translation_candidates
+                response["requires_review"] = requires_review
+                response["llm_used"] = ai_result.get("llm_used")
+                response["llm_error"] = ai_result.get("llm_error")
 
                 await manager.broadcast(session_id, response)
                 continue
@@ -253,12 +267,18 @@ async def translate_websocket(
 
             saved_log_id = None
             if auto_save:
+                saved_log_id = await next_sequence("translation_log_id", 1)
+                medical_id = consultation.get("medical_id")
+                if not medical_id:
+                    doctor = await database.user.find_one({"_id": ObjectId(consultation.get("doctor_id"))})
+                    medical_id = int(doctor.get("medical_id", 0)) if doctor else 0
                 result = await database.translation_log.insert_one(
                     {
-                        "medical_id": consultation.get("doctor_id"),
+                        "log_id": saved_log_id,
+                        "medical_id": medical_id,
                         "doctor_id": consultation.get("doctor_id"),
                         "session_id": session_id,
-                        "patient_id": consultation.get("patient_id"),
+                        "patient_id": consultation.get("patient_id") or "none",
                         "input_time": datetime.now(timezone.utc),
                         "gloss_result": ai_result.get("gloss_result") or ai_result.get("gloss") or "",
                         "translated_text": translated_text,
@@ -266,7 +286,6 @@ async def translate_websocket(
                         "category": infer_category(translated_text),
                     }
                 )
-                saved_log_id = str(result.inserted_id)
 
             response = WSTranslationMessage(
                 text=translated_text,

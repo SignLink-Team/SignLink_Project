@@ -8,6 +8,7 @@ from app.auth.dependencies import get_current_user
 from app.auth.jwt import create_access_token, hash_password, verify_password
 from app.database import get_database
 from app.models.user import TokenResponse, UserCreate, UserLogin, UserPublic, user_document_to_public
+from app.services.counters import next_sequence
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -20,7 +21,9 @@ async def register(payload: UserCreate) -> UserPublic:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
 
     now = datetime.now(timezone.utc)
+    medical_id = await next_sequence("medical_id", 1000)
     doc = {
+        "medical_id": medical_id,
         "email": payload.email.lower(),
         "password_hash": hash_password(payload.password),
         "name": payload.name,
@@ -39,10 +42,15 @@ async def login(payload: UserLogin) -> TokenResponse:
     if not user or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
+    if not user.get("medical_id"):
+        medical_id = await next_sequence("medical_id", 1000)
+        await database.user.update_one({"_id": user["_id"]}, {"$set": {"medical_id": medical_id}})
+        user["medical_id"] = medical_id
+
     user_id = str(user["_id"])
     token = create_access_token(
         subject=user_id,
-        extra_claims={"email": user["email"], "role": user["role"]},
+        extra_claims={"email": user["email"], "role": user["role"], "medical_id": user["medical_id"]},
     )
 
     await database.auth_sessions.insert_one(
@@ -63,4 +71,8 @@ async def get_me(current_user: Annotated[dict, Depends(get_current_user)]) -> Us
     user = await database.user.find_one({"_id": ObjectId(current_user["id"])})
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if not user.get("medical_id"):
+        medical_id = await next_sequence("medical_id", 1000)
+        await database.user.update_one({"_id": user["_id"]}, {"$set": {"medical_id": medical_id}})
+        user["medical_id"] = medical_id
     return user_document_to_public(user)

@@ -16,4 +16,5 @@ __pycache__/
 ai_server/prediction_outputs/
 *.npy
 
-*.pth
+llm_models/
+llama.cpp/

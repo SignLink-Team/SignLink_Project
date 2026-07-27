@@ -32,11 +32,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const data = text ? JSON.parse(text) : null
 
   if (!response.ok) {
-    const detail = typeof data?.detail === 'string'
-      ? data.detail
-      : Array.isArray(data?.detail)
-        ? data.detail.map((item: { msg: string }) => item.msg).join(', ')
-        : '요청 처리에 실패했습니다.'
+    const detail =
+      typeof data?.detail === 'string'
+        ? data.detail
+        : Array.isArray(data?.detail)
+          ? data.detail.map((item: { msg: string }) => item.msg).join(', ')
+          : '요청 처리에 실패했습니다.'
     throw new Error(detail)
   }
 
@@ -91,6 +92,13 @@ export const api = {
     })
   },
 
+  async updateTranslation(logId: number, body: { patient_id?: string | null }) {
+    return request<ApiTranslation>(`/translations/${logId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    })
+  },
+
   async listTranslations(params: { search?: string; category?: string; limit?: number } = {}) {
     const query = new URLSearchParams()
     if (params.search) query.set('search', params.search)
@@ -100,8 +108,8 @@ export const api = {
     return request<ApiTranslation[]>(`/translations${suffix}`)
   },
 
-  async deleteTranslation(id: string) {
-    return request<void>(`/translations/${id}`, { method: 'DELETE' })
+  async deleteTranslation(logId: number) {
+    return request<void>(`/translations/${logId}`, { method: 'DELETE' })
   },
 
   async clearTranslations() {

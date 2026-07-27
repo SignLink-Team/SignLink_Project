@@ -18,6 +18,7 @@ class UserLogin(BaseModel):
 
 class UserPublic(BaseModel):
     id: str
+    medical_id: int
     email: EmailStr
     name: str
     role: Literal["doctor", "patient"]
@@ -32,6 +33,7 @@ class TokenResponse(BaseModel):
 def user_document_to_public(doc: dict) -> UserPublic:
     return UserPublic(
         id=str(doc["_id"]),
+        medical_id=int(doc.get("medical_id", 0)),
         email=doc["email"],
         name=doc["name"],
         role=doc["role"],

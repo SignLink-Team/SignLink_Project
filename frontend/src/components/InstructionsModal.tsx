@@ -46,27 +46,27 @@ export const InstructionsModal = ({ isOpen, onClose }: InstructionsModalProps) =
 
             <div className="mt-4 space-y-4">
               <p className="text-xs text-neutral-500 leading-relaxed font-medium">
-                SignLink는 의료진과 수어 사용 환자 간 의사소통을 돕는 실시간 수어 번역 인터페이스입니다.
+                SignLink는 의료진과 수어 사용자 사이의 의사소통을 돕는 실시간 수어 번역 인터페이스입니다.
               </p>
 
               <div className="space-y-3">
                 <GuideStep
                   number="1"
                   icon={<Camera className="w-3.5 h-3.5" />}
-                  title="카메라 실행"
-                  body="메인 화면의 카메라 영역을 누르면 수어 감지 화면이 켜집니다. 브라우저 카메라 권한이 없으면 합성 추적 화면으로 테스트할 수 있습니다."
+                  title="입력 방식 선택"
+                  body="실시간 카메라 또는 동영상 업로드를 선택하면 클라이언트에서 프레임별 키포인트를 추출해 백엔드로 전송합니다."
                 />
                 <GuideStep
                   number="2"
                   icon={<Hand className="w-3.5 h-3.5" />}
-                  title="임상 수어 시뮬레이터"
-                  body="카메라 실행 후 아래 제스처 버튼을 누르면 진료 상황별 번역 결과를 즉시 확인할 수 있습니다."
+                  title="AI 예측"
+                  body="백엔드는 WebSocket으로 AI 서버에 키포인트를 중계하고, AI 서버는 누적 좌표를 기반으로 글로스와 번역 결과를 반환합니다."
                 />
                 <GuideStep
                   number="3"
                   icon={<Save className="w-3.5 h-3.5" />}
                   title="자동 저장"
-                  body="의료진 로그인 후 자동 저장을 ON으로 두면 번역 결과가 MongoDB translation_log에 저장됩니다. OFF 상태에서는 화면에만 표시됩니다."
+                  body="의료진 로그인 후 자동 저장을 ON으로 두면 확정된 번역 결과가 MongoDB translation_log에 저장됩니다."
                 />
                 <GuideStep
                   number="4"
@@ -93,17 +93,7 @@ export const InstructionsModal = ({ isOpen, onClose }: InstructionsModalProps) =
   )
 }
 
-function GuideStep({
-  number,
-  icon,
-  title,
-  body,
-}: {
-  number: string
-  icon: ReactNode
-  title: string
-  body: string
-}) {
+function GuideStep({ number, icon, title, body }: { number: string; icon: ReactNode; title: string; body: string }) {
   return (
     <div className="flex gap-3 items-start">
       <div className="w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold leading-none shrink-0 mt-0.5">

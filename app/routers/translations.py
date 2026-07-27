@@ -1,16 +1,18 @@
 from datetime import datetime, timezone
 from typing import Annotated
 
-from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pymongo import ReturnDocument
 
 from app.auth.dependencies import require_role
 from app.database import get_database
 from app.models.translation import (
     TranslationCreate,
     TranslationPublic,
+    TranslationUpdate,
     translation_document_to_public,
 )
+from app.services.counters import next_sequence
 
 router = APIRouter(prefix="/translations", tags=["translations"])
 
@@ -41,11 +43,13 @@ async def create_translation(
 ) -> TranslationPublic:
     database = get_database()
     now = datetime.now(timezone.utc)
+    log_id = await next_sequence("translation_log_id", 1)
     doc = {
-        "medical_id": current_user["id"],
+        "log_id": log_id,
+        "medical_id": current_user["medical_id"],
         "doctor_id": current_user["id"],
         "session_id": payload.session_id,
-        "patient_id": payload.patient_id,
+        "patient_id": payload.patient_id or "none",
         "input_time": now,
         "gloss_result": payload.gloss_result,
         "translated_text": payload.translated_text,
@@ -54,6 +58,33 @@ async def create_translation(
     }
     result = await database.translation_log.insert_one(doc)
     doc["_id"] = result.inserted_id
+    return translation_document_to_public(doc)
+
+
+@router.patch("/{log_id}", response_model=TranslationPublic)
+async def update_translation(
+    log_id: int,
+    payload: TranslationUpdate,
+    current_user: Annotated[dict, Depends(require_role("doctor"))],
+) -> TranslationPublic:
+    database = get_database()
+    update: dict = {}
+    if payload.patient_id is not None:
+        update["patient_id"] = payload.patient_id.strip() or "none"
+
+    if not update:
+        doc = await database.translation_log.find_one({"log_id": log_id, "medical_id": current_user["medical_id"]})
+        if not doc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Translation not found")
+        return translation_document_to_public(doc)
+
+    doc = await database.translation_log.find_one_and_update(
+        {"log_id": log_id, "medical_id": current_user["medical_id"]},
+        {"$set": update},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Translation not found")
     return translation_document_to_public(doc)
 
 
@@ -66,7 +97,7 @@ async def list_translations(
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[TranslationPublic]:
     database = get_database()
-    query: dict = {"medical_id": current_user["id"]}
+    query: dict = {"medical_id": current_user["medical_id"]}
     if session_id:
         query["session_id"] = session_id
     if category and category != CATEGORY_ALL:
@@ -81,38 +112,28 @@ async def list_translations(
     return [translation_document_to_public(doc) async for doc in cursor]
 
 
-@router.get("/{translation_id}", response_model=TranslationPublic)
+@router.get("/{log_id}", response_model=TranslationPublic)
 async def get_translation(
-    translation_id: str,
+    log_id: int,
     current_user: Annotated[dict, Depends(require_role("doctor"))],
 ) -> TranslationPublic:
     database = get_database()
-    try:
-        oid = ObjectId(translation_id)
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid translation id") from exc
-
-    doc = await database.translation_log.find_one({"_id": oid})
+    doc = await database.translation_log.find_one({"log_id": log_id})
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Translation not found")
-    if doc.get("medical_id") != current_user["id"]:
+    if doc.get("medical_id") != current_user["medical_id"]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
     return translation_document_to_public(doc)
 
 
-@router.delete("/{translation_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{log_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_translation(
-    translation_id: str,
+    log_id: int,
     current_user: Annotated[dict, Depends(require_role("doctor"))],
 ) -> None:
     database = get_database()
-    try:
-        oid = ObjectId(translation_id)
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid translation id") from exc
-
-    result = await database.translation_log.delete_one({"_id": oid, "medical_id": current_user["id"]})
+    result = await database.translation_log.delete_one({"log_id": log_id, "medical_id": current_user["medical_id"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Translation not found")
 
@@ -122,4 +143,4 @@ async def clear_translations(
     current_user: Annotated[dict, Depends(require_role("doctor"))],
 ) -> None:
     database = get_database()
-    await database.translation_log.delete_many({"medical_id": current_user["id"]})
+    await database.translation_log.delete_many({"medical_id": current_user["medical_id"]})

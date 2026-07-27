@@ -12,6 +12,7 @@ class SessionCreate(BaseModel):
 class SessionPublic(BaseModel):
     id: str
     doctor_id: str
+    medical_id: int | None = None
     patient_id: str | None = None
     title: str
     status: Literal["active", "closed"] = "active"
@@ -23,6 +24,7 @@ def session_document_to_public(doc: dict) -> SessionPublic:
     return SessionPublic(
         id=str(doc["_id"]),
         doctor_id=doc["doctor_id"],
+        medical_id=doc.get("medical_id"),
         patient_id=doc.get("patient_id"),
         title=doc["title"],
         status=doc.get("status", "active"),

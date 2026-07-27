@@ -1,17 +1,39 @@
 import { FormEvent, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { ArrowLeft, Check, Clock, Copy, FileSpreadsheet, Filter, Plus, Search, Trash2 } from 'lucide-react'
+import { MEDICAL_CATEGORIES } from '../data'
 import { TranslationLog } from '../types'
 
 interface HistoryViewProps {
   logs: TranslationLog[]
   onBack: () => void
   onClearLogs: () => Promise<void>
-  onDeleteLog: (id: string) => Promise<void>
+  onDeleteLog: (logId: number) => Promise<void>
   onAddManualLog: (text: string, category: string) => Promise<void>
+  onUpdatePatientId: (logId: number, patientId: string) => Promise<void>
 }
 
-const fallbackCategories = ['전체', '두통', '호흡기', '전신/감기', '소화기', '근골격계', '알레르기', '이비인후과', '기타']
+function formatInputTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString('ko-KR', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function formatConfidence(value: number) {
+  if (!Number.isFinite(value)) return '0%'
+  const normalized = value <= 1 ? value * 100 : value
+  return `${Math.round(normalized)}%`
+}
+
+function wordsLabel(glossResult: string) {
+  return glossResult.trim() || 'none'
+}
 
 export const HistoryView = ({
   logs,
@@ -19,34 +41,40 @@ export const HistoryView = ({
   onClearLogs,
   onDeleteLog,
   onAddManualLog,
+  onUpdatePatientId,
 }: HistoryViewProps) => {
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedCategory, setSelectedCategory] = useState('전체')
-  const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [copiedId, setCopiedId] = useState<number | null>(null)
   const [manualText, setManualText] = useState('')
   const [manualCat, setManualCat] = useState('기타')
   const [showAddForm, setShowAddForm] = useState(false)
+  const [editingLogId, setEditingLogId] = useState<number | null>(null)
+  const [editingPatientId, setEditingPatientId] = useState('')
   const [error, setError] = useState<string | null>(null)
 
   const categories = useMemo(() => {
-    const list = new Set(fallbackCategories)
+    const list = new Set(MEDICAL_CATEGORIES)
     logs.forEach((log) => {
       if (log.category) list.add(log.category)
     })
     return Array.from(list)
   }, [logs])
 
-  const filteredLogs = useMemo(() => (
-    logs.filter((log) => {
-      const matchSearch = log.text.toLowerCase().includes(searchTerm.toLowerCase())
-      const matchCat = selectedCategory === '전체' || log.category === selectedCategory
-      return matchSearch && matchCat
-    })
-  ), [logs, searchTerm, selectedCategory])
+  const filteredLogs = useMemo(
+    () =>
+      logs.filter((log) => {
+        const target = `${log.translated_text} ${log.gloss_result} ${log.patient_id} ${log.medical_id}`.toLowerCase()
+        const matchSearch = target.includes(searchTerm.toLowerCase())
+        const matchCat = selectedCategory === '전체' || log.category === selectedCategory
+        return matchSearch && matchCat
+      }),
+    [logs, searchTerm, selectedCategory],
+  )
 
-  const handleCopy = (id: string, text: string) => {
+  const handleCopy = (logId: number, text: string) => {
     navigator.clipboard?.writeText(text)
-    setCopiedId(id)
+    setCopiedId(logId)
     window.setTimeout(() => setCopiedId(null), 1500)
   }
 
@@ -63,10 +91,10 @@ export const HistoryView = ({
     }
   }
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async (logId: number) => {
     setError(null)
     try {
-      await onDeleteLog(id)
+      await onDeleteLog(logId)
     } catch (err) {
       setError(err instanceof Error ? err.message : '기록 삭제에 실패했습니다.')
     }
@@ -79,6 +107,27 @@ export const HistoryView = ({
       await onClearLogs()
     } catch (err) {
       setError(err instanceof Error ? err.message : '전체 삭제에 실패했습니다.')
+    }
+  }
+
+  const startEditPatientId = (log: TranslationLog) => {
+    setEditingLogId(log.log_id)
+    setEditingPatientId(log.patient_id || 'none')
+    setError(null)
+  }
+
+  const cancelEditPatientId = () => {
+    setEditingLogId(null)
+    setEditingPatientId('')
+  }
+
+  const savePatientId = async (logId: number) => {
+    setError(null)
+    try {
+      await onUpdatePatientId(logId, editingPatientId.trim() || 'none')
+      cancelEditPatientId()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '환자 ID 수정에 실패했습니다.')
     }
   }
 
@@ -96,7 +145,7 @@ export const HistoryView = ({
             whileTap={{ scale: 0.9 }}
             onClick={onBack}
             className="p-2 hover:bg-neutral-100 rounded-full transition-colors duration-150"
-            title="대시보드로 돌아가기"
+            title="메인으로 돌아가기"
           >
             <ArrowLeft className="w-5 h-5 text-on-surface" />
           </motion.button>
@@ -152,7 +201,7 @@ export const HistoryView = ({
                   required
                   value={manualText}
                   onChange={(event) => setManualText(event.target.value)}
-                  placeholder="예: 오른쪽 팔에 통증이 있습니다."
+                  placeholder="오른쪽 팔에 통증이 있습니다."
                   className="w-full px-3 py-2 bg-white border border-neutral-200 rounded-lg text-sm focus:border-secondary outline-none"
                 />
               </div>
@@ -163,8 +212,10 @@ export const HistoryView = ({
                   onChange={(event) => setManualCat(event.target.value)}
                   className="w-full px-3 py-2 bg-white border border-neutral-200 rounded-lg text-sm focus:border-secondary outline-none"
                 >
-                  {fallbackCategories.filter((cat) => cat !== '전체').map((cat) => (
-                    <option key={cat} value={cat}>{cat}</option>
+                  {MEDICAL_CATEGORIES.filter((cat) => cat !== '전체').map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
                   ))}
                 </select>
               </div>
@@ -192,7 +243,7 @@ export const HistoryView = ({
             type="text"
             value={searchTerm}
             onChange={(event) => setSearchTerm(event.target.value)}
-            placeholder="번역 내용 검색..."
+            placeholder="번역 내용, 환자 ID, 의료진 ID 검색..."
             className="w-full pl-9 pr-4 py-2 bg-neutral-50 hover:bg-neutral-100/60 focus:bg-white border border-neutral-200 focus:border-primary rounded-lg text-sm font-medium outline-none transition-all duration-200 font-hyper text-on-surface"
           />
         </div>
@@ -209,9 +260,7 @@ export const HistoryView = ({
                 key={cat}
                 onClick={() => setSelectedCategory(cat)}
                 className={`px-3 py-1 rounded-full text-xs sm:text-sm font-bold leading-none border transition-all duration-200 ${
-                  isSelected
-                    ? 'bg-primary text-white border-primary shadow-xs'
-                    : 'bg-neutral-50 hover:bg-neutral-100 text-neutral-500 border-neutral-200'
+                  isSelected ? 'bg-primary text-white border-primary shadow-xs' : 'bg-neutral-50 hover:bg-neutral-100 text-neutral-500 border-neutral-200'
                 }`}
               >
                 {cat}
@@ -226,8 +275,8 @@ export const HistoryView = ({
           {filteredLogs.length > 0 ? (
             filteredLogs.map((log, index) => (
               <motion.div
-                key={log.id}
-                layoutId={log.id}
+                key={log.log_id}
+                layoutId={String(log.log_id)}
                 initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.98 }}
@@ -235,23 +284,64 @@ export const HistoryView = ({
                 className="w-full bg-white hover:bg-neutral-50/50 border border-neutral-100 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 transition-all duration-150 shadow-2xs"
               >
                 <div className="flex items-start gap-3.5 flex-1 min-w-0">
-                  <div className="w-8 h-8 rounded-lg bg-neutral-100 flex items-center justify-center flex-shrink-0 border border-neutral-150">
+                  <div className="w-9 h-9 rounded-lg bg-white flex items-center justify-center flex-shrink-0 border border-neutral-300">
                     <span className="text-secondary font-bold text-sm select-none">...</span>
                   </div>
 
-                  <div className="space-y-1.5 pr-2">
-                    <p className="text-base font-semibold text-on-surface font-sans leading-snug break-keep select-all">
-                      {log.text}
+                  <div className="space-y-2 pr-2 min-w-0">
+                    <p className="text-base sm:text-lg font-extrabold text-on-surface font-sans leading-snug break-keep select-all">
+                      {log.translated_text}
                     </p>
-                    <div className="flex items-center gap-2">
-                      {log.category && (
-                        <span className="text-xxs sm:text-xs font-bold bg-secondary-container/15 text-secondary border border-secondary-container/30 px-2 py-0.5 rounded-sm tracking-wide">
-                          {log.category}
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {editingLogId === log.log_id ? (
+                        <span className="inline-flex items-center gap-1 rounded-md border border-secondary-container bg-secondary-container/15 px-2 py-1">
+                          <span className="text-xs font-bold text-secondary">환자:</span>
+                          <input
+                            value={editingPatientId}
+                            onChange={(event) => setEditingPatientId(event.target.value)}
+                            className="w-28 bg-white border border-neutral-200 rounded px-2 py-0.5 text-xs font-bold outline-none focus:border-secondary"
+                            autoFocus
+                          />
+                          <button
+                            onClick={() => savePatientId(log.log_id)}
+                            className="px-2 py-0.5 rounded bg-secondary text-white text-xs font-bold"
+                          >
+                            저장
+                          </button>
+                          <button
+                            onClick={cancelEditPatientId}
+                            className="px-1.5 py-0.5 rounded bg-white text-neutral-500 text-xs font-bold border border-neutral-200"
+                          >
+                            취소
+                          </button>
                         </span>
+                      ) : (
+                        <>
+                          <span className="text-xs font-bold bg-secondary-container/20 text-secondary border border-secondary-container/50 px-2 py-0.5 rounded-sm">
+                            환자: {log.patient_id || 'none'}
+                          </span>
+                          <button
+                            onClick={() => startEditPatientId(log)}
+                            className="text-xs font-bold bg-white text-primary border border-primary/30 hover:bg-primary/5 px-2 py-0.5 rounded-sm"
+                          >
+                            환자 ID 수정
+                          </button>
+                        </>
                       )}
-                      {log.isCustom && (
-                        <span className="text-xxs sm:text-xs font-bold bg-neutral-100 text-neutral-500 border border-neutral-200 px-1.5 py-0.5 rounded-sm uppercase">
-                          Custom
+
+                      <span className="text-xs font-bold bg-indigo-50 text-indigo-600 border border-indigo-200 px-2 py-0.5 rounded-sm">
+                        의료진: {log.medical_id}
+                      </span>
+                      <span className="text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-sm">
+                        신뢰도: {formatConfidence(log.confidence)}
+                      </span>
+                      <span className="text-xs font-bold bg-neutral-50 text-neutral-600 border border-neutral-200 px-2 py-0.5 rounded-sm">
+                        글로스: {wordsLabel(log.gloss_result)}
+                      </span>
+                      {log.category && (
+                        <span className="text-xs font-bold bg-cyan-50 text-secondary border border-cyan-200 px-2 py-0.5 rounded-sm">
+                          {log.category}
                         </span>
                       )}
                     </div>
@@ -261,19 +351,21 @@ export const HistoryView = ({
                 <div className="flex items-center justify-between sm:justify-end gap-4 border-t sm:border-t-0 pt-2 sm:pt-0 border-neutral-50">
                   <div className="flex items-center gap-1.5 text-right font-hyper">
                     <Clock className="w-3.5 h-3.5 text-neutral-300" />
-                    <span className="text-xs sm:text-sm text-neutral-400 font-bold whitespace-nowrap">{log.timestamp}</span>
+                    <span className="text-xs sm:text-sm text-neutral-400 font-bold whitespace-nowrap">
+                      {formatInputTime(log.input_time)}
+                    </span>
                   </div>
 
                   <div className="flex items-center gap-1">
                     <button
-                      onClick={() => handleCopy(log.id, log.text)}
+                      onClick={() => handleCopy(log.log_id, log.translated_text)}
                       className="p-1.5 hover:bg-neutral-100 rounded-md text-neutral-400 hover:text-primary transition-colors duration-100"
                       title="클립보드에 복사"
                     >
-                      {copiedId === log.id ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
+                      {copiedId === log.log_id ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
                     </button>
                     <button
-                      onClick={() => handleDelete(log.id)}
+                      onClick={() => handleDelete(log.log_id)}
                       className="p-1.5 hover:bg-red-50 rounded-md text-neutral-400 hover:text-red-600 transition-colors duration-100"
                       title="항목 삭제"
                     >
