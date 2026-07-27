@@ -16,8 +16,10 @@ interface CameraViewProps {
 }
 
 type InputMode = 'camera' | 'video'
+type CameraCaptureStatus = 'idle' | 'countdown' | 'recording'
 
-const CAMERA_FRAME_INTERVAL_MS = 120
+const CAMERA_EXTRACTION_FPS = 30
+const CAMERA_FRAME_INTERVAL_MS = 1000 / CAMERA_EXTRACTION_FPS
 const UPLOAD_EXTRACTION_FPS = 30
 
 export const CameraView: React.FC<CameraViewProps> = ({
@@ -36,9 +38,15 @@ export const CameraView: React.FC<CameraViewProps> = ({
   const extractorRef = useRef<BrowserKeypointExtractor | null>(null)
   const loopRef = useRef<number | null>(null)
   const lastFrameAtRef = useRef(0)
+  const countdownTimerRef = useRef<number | null>(null)
+  const pendingSpaceStartRef = useRef(false)
+  const isSendingFrameRef = useRef(false)
 
   const [inputMode, setInputMode] = useState<InputMode>('camera')
   const [cameraError, setCameraError] = useState<string | null>(null)
+  const [cameraReady, setCameraReady] = useState(false)
+  const [cameraCaptureStatus, setCameraCaptureStatus] = useState<CameraCaptureStatus>('idle')
+  const [countdown, setCountdown] = useState(0)
   const [activeGesture, setActiveGesture] = useState<GesturePreset | null>(null)
   const [trackingScore, setTrackingScore] = useState(0)
   const [sentFrames, setSentFrames] = useState(0)
@@ -51,12 +59,23 @@ export const CameraView: React.FC<CameraViewProps> = ({
   const stopFrameLoop = () => {
     if (loopRef.current !== null) cancelAnimationFrame(loopRef.current)
     loopRef.current = null
+    isSendingFrameRef.current = false
+  }
+
+  const stopCountdown = () => {
+    if (countdownTimerRef.current !== null) window.clearInterval(countdownTimerRef.current)
+    countdownTimerRef.current = null
+    setCountdown(0)
+    setCameraCaptureStatus((status) => (status === 'countdown' ? 'idle' : status))
   }
 
   const stopCameraStream = () => {
     stopFrameLoop()
+    stopCountdown()
     streamRef.current?.getTracks().forEach((track) => track.stop())
     streamRef.current = null
+    setCameraReady(false)
+    setCameraCaptureStatus('idle')
   }
 
   const ensureExtractor = async () => {
@@ -82,16 +101,87 @@ export const CameraView: React.FC<CameraViewProps> = ({
 
   const startCameraLoop = () => {
     stopFrameLoop()
+    lastFrameAtRef.current = 0
     const tick = async (time: number) => {
-      if (time - lastFrameAtRef.current >= CAMERA_FRAME_INTERVAL_MS) {
+      if (time - lastFrameAtRef.current >= CAMERA_FRAME_INTERVAL_MS && !isSendingFrameRef.current) {
         lastFrameAtRef.current = time
+        isSendingFrameRef.current = true
         sendCurrentVideoFrame().catch((err) => {
           setCameraError(err instanceof Error ? err.message : '키포인트 추출에 실패했습니다.')
+        }).finally(() => {
+          isSendingFrameRef.current = false
         })
       }
       loopRef.current = requestAnimationFrame(tick)
     }
     loopRef.current = requestAnimationFrame(tick)
+  }
+
+  const startCameraCaptureAfterCountdown = () => {
+    if (cameraCaptureStatus !== 'idle') return
+    setCameraError(null)
+    setCountdown(3)
+    setCameraCaptureStatus('countdown')
+
+    countdownTimerRef.current = window.setInterval(() => {
+      setCountdown((value) => {
+        if (value > 1) return value - 1
+
+        if (countdownTimerRef.current !== null) window.clearInterval(countdownTimerRef.current)
+        countdownTimerRef.current = null
+
+        onStreamStart()
+          .then((started) => {
+            if (!started) {
+              setCameraCaptureStatus('idle')
+              return
+            }
+            setSentFrames(0)
+            setCameraCaptureStatus('recording')
+            startCameraLoop()
+          })
+          .catch((err) => {
+            setCameraError(err instanceof Error ? err.message : '실시간 번역 세션을 시작하지 못했습니다.')
+            setCameraCaptureStatus('idle')
+          })
+
+        return 0
+      })
+    }, 1000)
+  }
+
+  const finishCameraCapture = async () => {
+    stopCountdown()
+    stopFrameLoop()
+    if (cameraCaptureStatus === 'recording') {
+      setCameraCaptureStatus('idle')
+      await onStreamEnd()
+      stopCameraStream()
+      onToggleActive()
+    }
+  }
+
+  const handleSpaceCaptureControl = () => {
+    if (inputMode !== 'camera' || isPredicting) return
+
+    if (!isActive) {
+      pendingSpaceStartRef.current = true
+      onToggleActive()
+      return
+    }
+
+    if (cameraCaptureStatus === 'recording') {
+      finishCameraCapture().catch(console.error)
+      return
+    }
+
+    if (cameraCaptureStatus === 'countdown') {
+      stopCountdown()
+      return
+    }
+
+    if (cameraReady) startCameraCaptureAfterCountdown()
+    else pendingSpaceStartRef.current = true
   }
 
   const seekVideo = (video: HTMLVideoElement, time: number) => new Promise<void>((resolve, reject) => {
@@ -139,12 +229,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
       try {
         setSentFrames(0)
         setCameraError(null)
-        const streamStarted = await onStreamStart()
-        if (!streamStarted || cancelled) {
-          onToggleActive()
-          return
-        }
-
+        setCameraReady(false)
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: 640, height: 480, facingMode: 'user' },
           audio: false,
@@ -155,7 +240,11 @@ export const CameraView: React.FC<CameraViewProps> = ({
           await videoRef.current.play()
         }
         await ensureExtractor()
-        startCameraLoop()
+        setCameraReady(true)
+        if (pendingSpaceStartRef.current && !cancelled) {
+          pendingSpaceStartRef.current = false
+          startCameraCaptureAfterCountdown()
+        }
       } catch (err) {
         setCameraError(err instanceof Error ? err.message : '카메라를 연결할 수 없습니다.')
       }
@@ -167,6 +256,21 @@ export const CameraView: React.FC<CameraViewProps> = ({
       stopCameraStream()
     }
   }, [isActive, inputMode])
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== 'Space') return
+      const target = event.target as HTMLElement | null
+      const tagName = target?.tagName?.toLowerCase()
+      if (tagName === 'input' || tagName === 'textarea' || target?.isContentEditable) return
+
+      event.preventDefault()
+      handleSpaceCaptureControl()
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [inputMode, isActive, cameraReady, cameraCaptureStatus, isPredicting])
 
   useEffect(() => {
     if (inputMode !== 'video' || !videoRef.current || !videoObjectUrl) return
@@ -218,13 +322,17 @@ export const CameraView: React.FC<CameraViewProps> = ({
       ctx.stroke()
       ctx.fillStyle = 'rgba(15, 194, 158, 0.7)'
       ctx.font = '10px monospace'
-      ctx.fillText(`FRAMES: ${sentFrames} | LATENCY: local keypoints`, 16, height - 20)
+      ctx.fillText(
+        `${cameraCaptureStatus === 'recording' ? 'REC 30FPS' : 'READY'} | FRAMES: ${sentFrames} | LATENCY: local keypoints`,
+        16,
+        height - 20,
+      )
       setTrackingScore(Math.min(99, Math.round(88 + sentFrames / 3)))
       animationId = requestAnimationFrame(render)
     }
     render()
     return () => cancelAnimationFrame(animationId)
-  }, [isActive, inputMode, sentFrames])
+  }, [cameraCaptureStatus, isActive, inputMode, sentFrames])
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -258,9 +366,12 @@ export const CameraView: React.FC<CameraViewProps> = ({
   }
 
   const handleCameraStopAndPredict = async () => {
+    if (cameraCaptureStatus === 'recording') {
+      await finishCameraCapture()
+      return
+    }
     stopCameraStream()
     onToggleActive()
-    await onStreamEnd()
   }
 
   const handlePredictUploadedVideo = async () => {
@@ -346,14 +457,18 @@ export const CameraView: React.FC<CameraViewProps> = ({
           playsInline
           muted
           className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
-            isActive || isVideoMode ? (isVideoMode ? 'opacity-100' : 'opacity-75 mix-blend-screen') : 'hidden'
+            isActive || isVideoMode ? 'opacity-100' : 'hidden'
           }`}
         />
         {isActive && inputMode === 'camera' && (
           <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none z-10" />
         )}
-        <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-black/10 pointer-events-none z-10" />
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(15,194,158,0.1)_0%,rgba(0,0,0,0.4)_100%)] pointer-events-none z-10" />
+        {(!isActive || isVideoMode) && (
+          <>
+            <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-black/10 pointer-events-none z-10" />
+            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(15,194,158,0.1)_0%,rgba(0,0,0,0.4)_100%)] pointer-events-none z-10" />
+          </>
+        )}
 
         <AnimatePresence mode="wait">
           {!isActive && !isVideoMode && (
@@ -394,12 +509,33 @@ export const CameraView: React.FC<CameraViewProps> = ({
             >
               <div className="flex items-center gap-2 bg-black/50 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/10">
                 <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
-                <span className="text-xs font-bold text-white tracking-wider ml-0.5">LIVE 키포인트 전송 중</span>
+                <span className="text-xs font-bold text-white tracking-wider ml-0.5">
+                  {cameraCaptureStatus === 'recording'
+                    ? 'LIVE 30fps 전송 중'
+                    : cameraCaptureStatus === 'countdown'
+                      ? `${countdown}초 후 촬영 시작`
+                      : '스페이스바로 촬영 시작'}
+                </span>
               </div>
               <div className="flex items-center gap-2 bg-black/50 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/10">
                 <Sparkles className="w-4 h-4 text-brand-green animate-pulse" />
                 <span className="text-xs font-bold text-white tracking-wider">프레임: {sentFrames}</span>
               </div>
+            </motion.div>
+          )}
+
+          {isActive && inputMode === 'camera' && cameraCaptureStatus === 'countdown' && (
+            <motion.div
+              key="countdown"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="absolute inset-0 flex flex-col items-center justify-center z-20 pointer-events-none"
+            >
+              <div className="w-28 h-28 rounded-full bg-black/50 border border-white/20 backdrop-blur-md flex items-center justify-center text-5xl font-black text-white">
+                {countdown}
+              </div>
+              <p className="mt-4 text-sm font-bold text-white/90">촬영 준비 중입니다</p>
             </motion.div>
           )}
 
@@ -435,7 +571,11 @@ export const CameraView: React.FC<CameraViewProps> = ({
               className="px-3.5 py-2 bg-black/60 hover:bg-black/80 disabled:opacity-60 backdrop-blur-md text-white rounded-lg border border-white/10 text-sm font-semibold flex items-center gap-1.5 transition-colors"
             >
               <VideoOff className="w-4 h-4 text-red-400" />
-              {isPredicting ? '예측 중...' : '카메라 끄기 / 예측'}
+              {isPredicting
+                ? '예측 중...'
+                : cameraCaptureStatus === 'recording'
+                  ? '촬영 종료 / 예측'
+                  : '카메라 끄기'}
             </button>
           </div>
         )}
