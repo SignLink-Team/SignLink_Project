@@ -1,177 +1,385 @@
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { TranslationLog, UserState, ViewState } from './types';
-import { INITIAL_TRANSLATION_LOGS, GESTURE_PRESETS } from './data';
-import { Header } from './components/Header';
-import { CameraView } from './components/CameraView';
-import { TranslationResult } from './components/TranslationResult';
-import { UnkSolver } from './components/UnkSolver';
-import { HistoryView } from './components/HistoryView';
-import { LoginView } from './components/LoginView';
-import { InstructionsModal } from './components/InstructionsModal';
-import { Activity, Languages, Info, ExternalLink } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
+import { Activity, Info } from 'lucide-react'
+import { api } from './api'
+import { CameraView } from './components/CameraView'
+import { Header } from './components/Header'
+import { HistoryView } from './components/HistoryView'
+import { InstructionsModal } from './components/InstructionsModal'
+import { LoginView } from './components/LoginView'
+import { TranslationResult } from './components/TranslationResult'
+import { ApiSession, ApiTranslation, TranslationCandidate, TranslationLog, UserState, ViewState } from './types'
+
+const emptyUser: UserState = {
+  isLoggedIn: false,
+  id: null,
+  medical_id: null,
+  email: null,
+  name: null,
+  role: null,
+}
+
+const WS_BASE = import.meta.env.VITE_WS_BASE || `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+
+function mapApiLog(item: ApiTranslation): TranslationLog {
+  return {
+    log_id: item.log_id,
+    medical_id: item.medical_id,
+    patient_id: item.patient_id || 'none',
+    input_time: item.input_time,
+    gloss_result: item.gloss_result || '',
+    translated_text: item.translated_text,
+    confidence: item.confidence ?? 0,
+    category: item.category,
+  }
+}
+
+function inferCategory(text: string) {
+  const rules: Array<[string, string[]]> = [
+    ['두통', ['머리', '두통', '어지']],
+    ['호흡기', ['기침', '숨', '호흡', '가래']],
+    ['전신/감기', ['열', '감기', '몸살', '춥']],
+    ['소화기', ['배', '복부', '속', '소화', '구토']],
+    ['근골격계', ['허리', '팔', '다리', '관절', '통증']],
+    ['알레르기', ['알레르기', '두드러기', '가려']],
+    ['이비인후과', ['목', '귀', '코', '삼키']],
+  ]
+  return rules.find(([, keywords]) => keywords.some((keyword) => text.includes(keyword)))?.[0] || '기타'
+}
 
 export default function App() {
-  // Navigation states
-  const [currentView, setCurrentView] = useState<ViewState>('main');
-  
-  // Login Profile State with local storage persistence
-  const [user, setUser] = useState<UserState>(() => {
-    const saved = localStorage.getItem('signlink_user');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { /* ignore */ }
-    }
-    return { isLoggedIn: false, email: null, name: null };
-  });
+  const [currentView, setCurrentView] = useState<ViewState>('main')
+  const [user, setUser] = useState<UserState>(emptyUser)
+  const [autoSave, setAutoSave] = useState(() => localStorage.getItem('signlink_autosave') !== 'false')
+  const [logs, setLogs] = useState<TranslationLog[]>([])
+  const [session, setSession] = useState<ApiSession | null>(null)
+  const [activeTranslation, setActiveTranslation] = useState<string | null>(null)
+  const [activeGlossResult, setActiveGlossResult] = useState('')
+  const [translationCandidates, setTranslationCandidates] = useState<TranslationCandidate[]>([])
+  const [activeConfidence, setActiveConfidence] = useState(0)
+  const [lastLogId, setLastLogId] = useState<number | null>(null)
+  const [cameraActive, setCameraActive] = useState(false)
+  const [isHelpOpen, setIsHelpOpen] = useState(false)
+  const [isPredicting, setIsPredicting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const activeSessionRef = useRef<ApiSession | null>(null)
 
-  // Auto Save State - preselects on-login as per screenshot
-  const [autoSave, setAutoSave] = useState<boolean>(() => {
-    return localStorage.getItem('signlink_autosave') === 'true';
-  });
-
-  // Translation history list
-  const [logs, setLogs] = useState<TranslationLog[]>(() => {
-    const saved = localStorage.getItem('signlink_logs');
-    if (saved) {
+  useEffect(() => {
+    async function loadMe() {
+      if (!api.getToken()) return
       try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0 && ('id' in parsed[0] || 'text' in parsed[0])) {
-          // Old schema detected, reset to new initial logs
-          return INITIAL_TRANSLATION_LOGS;
+        const me = await api.me()
+        setUser({
+          isLoggedIn: true,
+          id: me.id,
+          medical_id: me.medical_id,
+          email: me.email,
+          name: me.name,
+          role: me.role,
+        })
+      } catch {
+        api.clearToken()
+        setUser(emptyUser)
+      }
+    }
+    loadMe()
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem('signlink_autosave', String(autoSave))
+  }, [autoSave])
+
+  const loadLogs = useCallback(async () => {
+    if (!user.isLoggedIn || user.role !== 'doctor') {
+      setLogs([])
+      return
+    }
+    const data = await api.listTranslations({ limit: 100 })
+    setLogs(data.map(mapApiLog))
+  }, [user.isLoggedIn, user.role])
+
+  useEffect(() => {
+    loadLogs().catch((err) => setError(err.message))
+  }, [loadLogs])
+
+  const ensureSession = useCallback(async () => {
+    if (activeSessionRef.current) return activeSessionRef.current
+    if (session) {
+      activeSessionRef.current = session
+      return session
+    }
+    const created = await api.createSession({ title: '실시간 수어 진료' })
+    activeSessionRef.current = created
+    setSession(created)
+    return created
+  }, [session])
+
+  const saveTranslationIfNeeded = useCallback(
+    async (text: string, category: string, glossResult: string, confidence: number) => {
+      setLastLogId(null)
+      if (!autoSave || !user.isLoggedIn || user.role !== 'doctor') return null
+
+      const activeSession = await ensureSession()
+      const saved = await api.createTranslation({
+        session_id: activeSession.id,
+        patient_id: 'none',
+        gloss_result: glossResult,
+        translated_text: text,
+        confidence,
+        category,
+      })
+      const mapped = mapApiLog(saved)
+      setLogs((prev) => [mapped, ...prev.filter((log) => log.log_id !== mapped.log_id)])
+      setLastLogId(mapped.log_id)
+      return mapped
+    },
+    [autoSave, ensureSession, user.isLoggedIn, user.role],
+  )
+
+  const handleCompletedTranslation = useCallback(
+    async (text: string, category = inferCategory(text), glossResult = text, confidence = 0.98) => {
+      setError(null)
+      setActiveTranslation(text)
+      setActiveGlossResult(glossResult)
+      setTranslationCandidates([])
+      setActiveConfidence(confidence)
+      try {
+        await saveTranslationIfNeeded(text, category, glossResult, confidence)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '번역 기록 저장에 실패했습니다.')
+      }
+    },
+    [saveTranslationIfNeeded],
+  )
+
+  const openTranslationSocket = useCallback(async () => {
+    if (!user.isLoggedIn || user.role !== 'doctor') {
+      setCurrentView('login')
+      setError('AI 예측을 사용하려면 의료진 계정으로 로그인해야 합니다.')
+      return false
+    }
+
+    const token = api.getToken()
+    if (!token) {
+      setCurrentView('login')
+      return false
+    }
+
+    const activeSession = await ensureSession()
+    wsRef.current?.close()
+
+    const socket = new WebSocket(`${WS_BASE}/ws/translate?token=${encodeURIComponent(token)}`)
+    wsRef.current = socket
+
+    return await new Promise<boolean>((resolve) => {
+      let resolved = false
+      const timeout = window.setTimeout(() => {
+        if (!resolved) {
+          resolved = true
+          setError('백엔드 WebSocket 연결 시간이 초과되었습니다.')
+          resolve(false)
         }
-        return parsed;
-      } catch (e) { /* ignore */ }
-    }
-    return INITIAL_TRANSLATION_LOGS;
-  });
+      }, 8000)
 
-  // Current active live translation outcome
-  const [activeTranslation, setActiveTranslation] = useState<string | null>(null);
+      socket.onopen = () => {
+        socket.send(JSON.stringify({ type: 'start', session_id: activeSession.id }))
+      }
 
-  // Active status of the camera viewfinder
-  const [cameraActive, setCameraActive] = useState<boolean>(false);
+      socket.onerror = () => {
+        if (!resolved) {
+          resolved = true
+          window.clearTimeout(timeout)
+          setError('백엔드 WebSocket에 연결할 수 없습니다.')
+          resolve(false)
+        }
+      }
 
-  // Help modal popup toggle
-  const [isHelpOpen, setIsHelpOpen] = useState<boolean>(false);
+      socket.onmessage = (event) => {
+        const message = JSON.parse(event.data)
 
-  // Persist user and auto-save options
-  useEffect(() => {
-    localStorage.setItem('signlink_user', JSON.stringify(user));
-    // When logging out, force turn off autosave to remain secure
-    if (!user.isLoggedIn) {
-      setAutoSave(false);
-      localStorage.setItem('signlink_autosave', 'false');
-    }
-  }, [user]);
+        if (message.type === 'error') {
+          setError(message.message || 'WebSocket 처리 중 오류가 발생했습니다.')
+          setIsPredicting(false)
+          if (!resolved) {
+            resolved = true
+            window.clearTimeout(timeout)
+            resolve(false)
+          }
+          return
+        }
 
-  useEffect(() => {
-    localStorage.setItem('signlink_autosave', String(autoSave));
-  }, [autoSave]);
+        if (message.type === 'stream_started') {
+          setError(null)
+          if (!resolved) {
+            resolved = true
+            window.clearTimeout(timeout)
+            resolve(true)
+          }
+          return
+        }
 
-  // Persist translation logs database
-  useEffect(() => {
-    localStorage.setItem('signlink_logs', JSON.stringify(logs));
-  }, [logs]);
+        if (message.type === 'translation') {
+          const words = Array.isArray(message.words) ? message.words : []
+          const candidates = Array.isArray(message.translation_candidates)
+            ? (message.translation_candidates as TranslationCandidate[])
+            : []
+          const glossResult = message.gloss_result || words.join(' ')
+          const text = message.text || glossResult || '인식된 수어가 없습니다.'
+          const confidence = Number(message.confidence ?? 0)
 
-  // Handle manual/automatic save insertions
-  const handleAddNewTranslationLog = (
-    text: string, 
-    category: string, 
-    pId?: string, 
-    gloss?: string, 
-    conf?: number
-  ) => {
-    const now = new Date();
-    const isoString = now.toISOString();
+          setActiveTranslation(text)
+          setActiveGlossResult(glossResult)
+          setTranslationCandidates(candidates)
+          setActiveConfidence(confidence)
+          setIsPredicting(false)
 
-    const maxLogId = logs.reduce((max, log) => log.log_id > max ? log.log_id : max, 0);
+          if (message.log_id) {
+            setLastLogId(Number(message.log_id))
+            loadLogs().catch((err) => setError(err.message))
+          }
+        }
+      }
+    })
+  }, [ensureSession, loadLogs, user.isLoggedIn, user.role])
 
-    const newLogItem: TranslationLog = {
-      log_id: maxLogId + 1,
-      medical_id: user.isLoggedIn && user.userId ? user.userId : 1001,
-      patient_id: pId || 'none',
-      input_time: isoString,
-      gloss_result: gloss || `${category} 제스처`,
-      translated_text: text,
-      confidence: conf !== undefined ? conf : Math.round(85 + Math.random() * 14),
-      category: category,
-      isCustom: true
-    };
+  const handleStreamStart = async () => {
+    setIsPredicting(false)
+    return await openTranslationSocket()
+  }
 
-    setLogs(prev => [newLogItem, ...prev]);
-  };
+  const handleKeypointFrame = async (keypoints: number[]) => {
+    const socket = wsRef.current
+    const activeSession = activeSessionRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN || !activeSession) return
+    socket.send(JSON.stringify({ type: 'frame', session_id: activeSession.id, keypoints }))
+  }
 
-  // Custom login dispatcher
-  const handleLoginSuccess = (email: string, name: string) => {
+  const handleStreamEnd = async () => {
+    const socket = wsRef.current
+    const activeSession = activeSessionRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN || !activeSession) return
+    setIsPredicting(true)
+    socket.send(JSON.stringify({ type: 'end', session_id: activeSession.id, auto_save: autoSave }))
+  }
+
+  const handleLoginSuccess = async (email: string, password: string) => {
+    setError(null)
+    const { access_token: token } = await api.login({ email, password })
+    api.setToken(token)
+    const me = await api.me()
     setUser({
       isLoggedIn: true,
-      email: email,
-      name: name,
-      userId: 1001
-    });
-    // Auto Save is automatically pre-toggles to "ON" upon clinic login as in the design!
-    setAutoSave(true);
-    setCurrentView('main');
-  };
+      id: me.id,
+      medical_id: me.medical_id,
+      email: me.email,
+      name: me.name,
+      role: me.role,
+    })
+    setAutoSave(true)
+    setCurrentView('main')
+  }
+
+  const handleRegister = async (name: string, email: string, password: string) => {
+    setError(null)
+    await api.register({ name, email, password, role: 'doctor' })
+    await handleLoginSuccess(email, password)
+  }
 
   const handleLogout = () => {
-    setUser({ isLoggedIn: false, email: null, name: null });
-    setAutoSave(false);
-    setActiveTranslation(null);
-    setCameraActive(false);
-  };
+    wsRef.current?.close()
+    api.clearToken()
+    setUser(emptyUser)
+    setAutoSave(false)
+    setActiveTranslation(null)
+    setActiveGlossResult('')
+    setTranslationCandidates([])
+    setCameraActive(false)
+    setSession(null)
+    activeSessionRef.current = null
+    setLogs([])
+    setCurrentView('main')
+  }
 
-  // Active translation dispatcher from simulated gesture selection
-  const handleTriggerTranslation = (text: string, category: string, gloss?: string, conf?: number) => {
-    setActiveTranslation(text);
+  const handleTriggerTranslation = async (text: string, category: string) => {
+    await handleCompletedTranslation(text, category, text)
+  }
 
-    // If auto-save is enabled on translation, stream into the history state instantly!
-    if (autoSave) {
-      let derivedGloss = gloss;
-      if (!derivedGloss) {
-        const preset = GESTURE_PRESETS.find(p => p.translationText === text);
-        derivedGloss = preset ? preset.gestureName : `${category} 인식`;
+  const handleSelectTranslation = async (text: string, category: string, confidence = activeConfidence) => {
+    await handleCompletedTranslation(text, category, activeGlossResult || text, confidence)
+  }
+
+  const handleRetryTranslation = async () => {
+    if (lastLogId) {
+      try {
+        await api.deleteTranslation(lastLogId)
+        setLogs((prev) => prev.filter((log) => log.log_id !== lastLogId))
+      } catch {
+        // The history screen still allows manual cleanup if this request fails.
       }
-      handleAddNewTranslationLog(text, category, 'none', derivedGloss, conf);
+      setLastLogId(null)
     }
-  };
+    setActiveTranslation(null)
+    setActiveGlossResult('')
+    setTranslationCandidates([])
+    setCameraActive(true)
+  }
 
-  const handleDeleteLog = (logId: number) => {
-    setLogs(prev => prev.filter(log => log.log_id !== logId));
-  };
+  const handleDeleteLog = async (logId: number) => {
+    await api.deleteTranslation(logId)
+    setLogs((prev) => prev.filter((log) => log.log_id !== logId))
+  }
 
-  const handleClearLogs = () => {
-    setLogs([]);
-  };
+  const handleClearLogs = async () => {
+    await api.clearTranslations()
+    setLogs([])
+  }
 
-  const handleAddManualLog = (text: string, category: string, pId?: string) => {
-    handleAddNewTranslationLog(text, category, pId || 'none', '수동 입력', 100);
-  };
+  const handleAddManualLog = async (text: string, category: string) => {
+    const saved = await api.createTranslation({
+      patient_id: 'none',
+      translated_text: text,
+      gloss_result: '직접 입력',
+      confidence: 1,
+      category,
+    })
+    setLogs((prev) => [mapApiLog(saved), ...prev])
+  }
 
-  const handleUpdatePatientId = (logId: number, patientId: string) => {
-    setLogs(prev => prev.map(log => log.log_id === logId ? { ...log, patient_id: patientId } : log));
-  };
+  const handleUpdatePatientId = async (logId: number, patientId: string) => {
+    const saved = await api.updateTranslation(logId, { patient_id: patientId || 'none' })
+    const mapped = mapApiLog(saved)
+    setLogs((prev) => prev.map((log) => (log.log_id === logId ? mapped : log)))
+  }
+
+  const handleClearTranslation = () => {
+    setActiveTranslation(null)
+    setActiveGlossResult('')
+    setTranslationCandidates([])
+    setLastLogId(null)
+  }
 
   return (
     <div className="min-h-screen bg-bg-base text-on-surface flex flex-col justify-between antialiased selection:bg-primary-light selection:text-primary font-sans">
-      
-      {/* Top Application header */}
       <Header
         user={user}
         onLoginClick={() => setCurrentView('login')}
         onLogoutClick={handleLogout}
         autoSave={autoSave}
-        onAutoSaveToggle={() => setAutoSave(!autoSave)}
+        onAutoSaveToggle={() => user.isLoggedIn && setAutoSave((value) => !value)}
         onHelpClick={() => setIsHelpOpen(true)}
         onLogoClick={() => setCurrentView('main')}
       />
 
-      {/* Main Views Panel */}
       <main className="flex-1 w-full flex items-center justify-center p-4 sm:p-6 md:p-8">
         <div className="w-full max-w-7xl">
+          {error && (
+            <div className="max-w-3xl mx-auto mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">
+              {error}
+            </div>
+          )}
+
           <AnimatePresence mode="wait">
-            
-            {/* View State 1: Dashboard Flow */}
             {currentView === 'main' && (
               <motion.div
                 key="main-view"
@@ -181,129 +389,70 @@ export default function App() {
                 transition={{ duration: 0.25 }}
                 className="w-full flex flex-col items-center gap-6"
               >
-                {/* Clinical Context info banner */}
-                <div className="w-full max-w-3xl flex flex-col sm:flex-row sm:items-center sm:justify-between px-4 py-3 bg-white border border-neutral-100 rounded-xl shadow-2xs gap-3">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-full bg-secondary-container/10 flex items-center justify-center text-secondary">
-                      <Activity className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <span className="text-sm font-bold text-on-surface flex items-center gap-1.5 leading-none">
-                        분당서울대병원 EMR 연동 솔루션
-                      </span>
-                      <p className="text-xs text-neutral-400 font-medium mt-1">
-                        본 터미널은 의사 자격 면허 소령 계정과 1:1 암호화 페어링됩니다.
-                      </p>
-                    </div>
-                  </div>
-                  
-                  {/* Interactive Status banner */}
-                  <div className="flex flex-wrap items-center gap-3">
-                    <span className="text-xs bg-neutral-150 border border-neutral-250 text-neutral-600 font-bold px-2.5 py-1.5 rounded-sm">
-                      {logs.length}개 누적 번역
-                    </span>
-                    <button
-                      onClick={() => setIsHelpOpen(true)}
-                      className="text-xs text-secondary hover:underline flex items-center gap-0.5 font-bold cursor-pointer"
-                    >
-                      <Info className="w-3.5 h-3.5" />
-                      도움말 가이드
-                    </button>
-                  </div>
-                </div>
-
-                {/* Central viewfinder column */}
-                <div id="signlink-viewport-container" className="w-full max-w-3xl flex flex-col items-center">
+                <div className="w-full max-w-3xl flex flex-col items-center">
                   <CameraView
                     isActive={cameraActive}
                     onToggleActive={() => {
-                      setCameraActive(!cameraActive);
-                      if (!cameraActive) {
-                        // Let's pre-populate the subtitle text with general welcome or reset
-                        setActiveTranslation(null);
-                      } else {
-                        // Trigger a demo welcome prompt upon turning the active stream on
-                        setActiveTranslation("환자분, 어디가 불편하신가요?");
-                      }
+                      setCameraActive((active) => !active)
+                      setActiveTranslation(null)
+                      setActiveGlossResult('')
+                      setTranslationCandidates([])
                     }}
                     onTriggerTranslation={handleTriggerTranslation}
+                    onStreamStart={handleStreamStart}
+                    onKeypointFrame={handleKeypointFrame}
+                    onStreamEnd={handleStreamEnd}
+                    isPredicting={isPredicting}
                   />
 
-                  {/* Dynamic output section */}
                   <TranslationResult
                     text={activeTranslation}
-                    onViewHistory={() => setCurrentView('history')}
+                    glossResult={activeGlossResult}
+                    candidates={translationCandidates}
+                    onViewHistory={() => setCurrentView(user.isLoggedIn ? 'history' : 'login')}
                     isLoggedIn={user.isLoggedIn}
                     autoSave={autoSave}
-                    onSelectTranslation={(text, category) => {
-                      handleTriggerTranslation(text, category);
-                    }}
-                    onClearTranslation={() => {
-                      setActiveTranslation(null);
-                    }}
+                    onRetry={handleRetryTranslation}
+                    onSelectTranslation={handleSelectTranslation}
+                    onClearTranslation={handleClearTranslation}
                   />
                 </div>
               </motion.div>
             )}
 
-            {/* View State 2: Logs list history */}
             {currentView === 'history' && (
-              user.isLoggedIn ? (
-                <HistoryView
-                  key="history-view"
-                  logs={logs}
-                  onBack={() => setCurrentView('main')}
-                  onClearLogs={handleClearLogs}
-                  onDeleteLog={handleDeleteLog}
-                  onAddManualLog={handleAddManualLog}
-                  onUpdatePatientId={handleUpdatePatientId}
-                />
-              ) : (
-                <LoginView
-                  key="login-view"
-                  onLoginSuccess={handleLoginSuccess}
-                  onBackToMain={() => setCurrentView('main')}
-                />
-              )
-            )}
-
-            {/* View State 3: Secure Medical Staff login portal */}
-            {currentView === 'login' && (
-              <LoginView
-                key="login-view"
-                onLoginSuccess={handleLoginSuccess}
-                onBackToMain={() => setCurrentView('main')}
+              <HistoryView
+                key="history-view"
+                logs={logs}
+                onBack={() => setCurrentView('main')}
+                onClearLogs={handleClearLogs}
+                onDeleteLog={handleDeleteLog}
+                onAddManualLog={handleAddManualLog}
+                onUpdatePatientId={handleUpdatePatientId}
               />
             )}
 
+            {(currentView === 'login' || currentView === 'register') && (
+              <LoginView
+                key="login-view"
+                mode={currentView}
+                onLoginSuccess={handleLoginSuccess}
+                onRegister={handleRegister}
+                onSwitchMode={() => setCurrentView(currentView === 'login' ? 'register' : 'login')}
+                onBackToMain={() => setCurrentView('main')}
+              />
+            )}
           </AnimatePresence>
         </div>
       </main>
 
-      {/* Auxiliary informative callout for clinical test environments */}
       <footer className="w-full py-4 border-t border-neutral-250 bg-white text-center text-[11px] text-neutral-400 font-medium">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2.5">
           <p>© 2026 SignLink. All rights reserved.</p>
-          
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-              EMR 보안서버 수어망 대기 중
-            </span>
-            <span>|</span>
-            <span className="text-[10px] bg-neutral-100 text-neutral-500 border border-neutral-200 px-1.5 py-0.5 rounded">
-              Atkinson Accessibility Standards Approved
-            </span>
-          </div>
         </div>
       </footer>
 
-      {/* Global Information Help Overlay */}
-      <InstructionsModal
-        isOpen={isHelpOpen}
-        onClose={() => setIsHelpOpen(false)}
-      />
-
+      <InstructionsModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} isLoggedIn={user.isLoggedIn} />
     </div>
-  );
+  )
 }
