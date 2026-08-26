@@ -4,7 +4,7 @@ webcam_combined.py
 수어 단어 인식(Holistic + CTC beam search)과
 비수지 신호 분류(FaceMesh + Transformer)를
 하나의 웹캠 루프에서 "동시에" 실행하는 통합 스크립트.
-(수지 신호 타임스탬프 출력 기능 추가)
+(비수지 신호 독립 추출 및 유연한 동기화 반영 버전)
 """
 
 import argparse
@@ -225,7 +225,6 @@ def load_sign_model(device):
 
 def ctc_beam_search_decode(log_probs, idx_to_gloss, blank_idx=0, beam_width=BEAM_WIDTH):
     T, C = log_probs.shape
-    # beams: {seq: (log_prob, probs_list, frames_list)}
     beams = {(): (0.0, [], [])}
 
     for t in range(T):
@@ -246,7 +245,6 @@ def ctc_beam_search_decode(log_probs, idx_to_gloss, blank_idx=0, beam_width=BEAM
                     new_probs = list(seq_probs)
                     new_frames = list(seq_frames)
                     current_prob = float(np.exp(token_log_prob))
-                    # 동일한 단어가 연속될 때, 가장 확률이 높은 프레임을 타임스탬프로 업데이트
                     if current_prob > new_probs[-1]:
                         new_probs[-1] = current_prob
                         new_frames[-1] = t
@@ -278,7 +276,7 @@ def ctc_beam_search_decode(log_probs, idx_to_gloss, blank_idx=0, beam_width=BEAM
         gloss = idx_to_gloss.get(token_idx, "<UNK>")
         prob = best_probs[i] if i < len(best_probs) else 0.0
         f_idx = best_frames[i] if i < len(best_frames) else 0
-        result.append((gloss, prob, f_idx))  # 프레임 인덱스 추가 반환
+        result.append((gloss, prob, f_idx))
 
     return result
 
@@ -289,16 +287,13 @@ def filter_predictions(raw_predictions):
 
     mean_conf = np.mean([p for _, p, _ in raw_predictions])
     if mean_conf < SEQUENCE_CONFIDENCE_THRESHOLD:
-        print(f"[FILTER] 시퀀스 평균 신뢰도 낮음 ({mean_conf:.3f} < {SEQUENCE_CONFIDENCE_THRESHOLD}) → 전체 버림")
         return []
 
     filtered = []
     for gloss, prob, f_idx in raw_predictions:
         if REMOVE_UNK and gloss == "<UNK>":
-            print("[FILTER] <UNK> 제거")
             continue
         if prob < TOKEN_CONFIDENCE_THRESHOLD:
-            print(f"[FILTER] '{gloss}' conf={prob:.3f} < {TOKEN_CONFIDENCE_THRESHOLD} → 제거")
             continue
         filtered.append(gloss)
 
@@ -324,7 +319,6 @@ def predict_sequence(model, raw_features, idx_to_gloss, blank_idx, device):
     raw_predictions = ctc_beam_search_decode(log_probs, idx_to_gloss, blank_idx, BEAM_WIDTH)
     filtered = filter_predictions(raw_predictions)
 
-    # 필터링된 단어 리스트, 원본 예측 튜플(단어, 확률, 프레임), 총 프레임(T) 반환
     return filtered, raw_predictions, log_probs.shape[0]
 
 
@@ -349,7 +343,6 @@ def draw_sign_header(frame, is_recording, frame_count, last_words, last_raw_pred
     )
 
     if last_raw_preds:
-        # last_raw_preds 튜플 구조 변경 반영 (gloss, prob, f_idx)
         conf_text = "  ".join([f"{g}({p:.2f})" for g, p, _ in last_raw_preds[:5]])
         cv2.putText(
             frame, f"Raw(beam): {conf_text}", (16, 110),
@@ -395,17 +388,6 @@ class LandmarkInterpolator:
         return current
 
 
-def print_nms_timeline(nms_segments):
-    if not nms_segments:
-        print("── 비수지 신호 타임라인: 감지된 신호 없음 ──")
-        return
-
-    ordered = sorted(nms_segments, key=lambda seg: seg[1])
-    print("── 비수지 신호 타임라인 ──")
-    for key, start, end in ordered:
-        print(f"  {key:<6} {start:6.2f}s ~ {end:6.2f}s  (지속 {end - start:5.2f}s)")
-
-
 def resize_like_preprocess(frame):
     width = 640
     height = int(width * frame.shape[0] / frame.shape[1])
@@ -426,7 +408,6 @@ def run(camera_idx=0, nms_window_size=60, save_path=None, nms_infer_stride=1):
         return
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
-
     writer = None
 
     # --- NMS 상태 ---
@@ -442,11 +423,11 @@ def run(camera_idx=0, nms_window_size=60, save_path=None, nms_infer_stride=1):
     last_raw_preds = []
     interpolator = LandmarkInterpolator()
 
-    # --- 비수지 타임라인 상태 ---
-    recording_start_time = None
+    # --- 비수지 타임라인 상태 (프레임 단위 기록) ---
+    recording_start_frame = None
     nms_key_active = {key: False for key in NMS_KEYS}
-    nms_open_start = {key: None for key in NMS_KEYS}
-    nms_segments = []
+    nms_open_start_frame = {key: None for key in NMS_KEYS}
+    nms_frame_segments = []
 
     frame_idx = 0
     nms_probs = np.zeros(len(NMS_KEYS), dtype=np.float32)
@@ -512,22 +493,21 @@ def run(camera_idx=0, nms_window_size=60, save_path=None, nms_infer_stride=1):
             else:
                 nms_probs = np.zeros(len(NMS_KEYS), dtype=np.float32)
 
-            # ---------------- 비수지 타임라인 추적 (녹화 중일 때만) ----------------
-            if is_recording and recording_start_time is not None:
-                elapsed = time.time() - recording_start_time
+            # ---------------- 비수지 타임라인 추적 (프레임 기반) ----------------
+            if is_recording and recording_start_frame is not None:
                 for i, key in enumerate(NMS_KEYS):
                     active = bool(smooth_probs[i] >= NMS_KEY_THRESHOLD[key])
                     was_active = nms_key_active[key]
 
                     if active and not was_active:
-                        nms_open_start[key] = elapsed
+                        nms_open_start_frame[key] = frame_idx
                         nms_key_active[key] = True
                     elif not active and was_active:
-                        start = nms_open_start[key]
-                        if start is not None:
-                            nms_segments.append((key, start, elapsed))
+                        start_f = nms_open_start_frame[key]
+                        if start_f is not None:
+                            nms_frame_segments.append((key, start_f, frame_idx))
                         nms_key_active[key] = False
-                        nms_open_start[key] = None
+                        nms_open_start_frame[key] = None
 
             # ---------------- 렌더링 ----------------
             draw_skeleton(display_frame, holistic_results)
@@ -559,10 +539,10 @@ def run(camera_idx=0, nms_window_size=60, save_path=None, nms_infer_stride=1):
                 is_recording = False
                 feat_buffer.clear()
                 smooth_probs = np.zeros(len(NMS_KEYS), dtype=np.float32)
-                recording_start_time = None
+                recording_start_frame = None
                 nms_key_active = {key: False for key in NMS_KEYS}
-                nms_open_start = {key: None for key in NMS_KEYS}
-                nms_segments = []
+                nms_open_start_frame = {key: None for key in NMS_KEYS}
+                nms_frame_segments = []
                 print("전체 리셋 (수어 + 비수지)")
 
             elif key == 32:  # SPACE
@@ -573,51 +553,93 @@ def run(camera_idx=0, nms_window_size=60, save_path=None, nms_infer_stride=1):
                     is_recording = True
                     interpolator = LandmarkInterpolator()
 
-                    recording_start_time = time.time()
+                    recording_start_frame = frame_idx
                     nms_key_active = {key: False for key in NMS_KEYS}
-                    nms_open_start = {key: None for key in NMS_KEYS}
-                    nms_segments = []
+                    nms_open_start_frame = {key: None for key in NMS_KEYS}
+                    nms_frame_segments = []
 
                     print("Recording started.")
                 else:
                     is_recording = False
-                    elapsed = time.time() - recording_start_time if recording_start_time else 0
-                    print(f"Recording stopped. Frames: {len(raw_features)}, Time: {elapsed:.2f}s")
+                    total_recorded_frames = len(raw_features)
+                    print(f"Recording stopped. Frames: {total_recorded_frames}")
 
-                    if recording_start_time is not None:
+                    if recording_start_frame is not None:
                         for key in NMS_KEYS:
-                            if nms_key_active[key] and nms_open_start[key] is not None:
-                                nms_segments.append((key, nms_open_start[key], elapsed))
+                            if nms_key_active[key] and nms_open_start_frame[key] is not None:
+                                nms_frame_segments.append((key, nms_open_start_frame[key], frame_idx))
                             nms_key_active[key] = False
-                            nms_open_start[key] = None
+                            nms_open_start_frame[key] = None
 
-                    # predict_sequence가 T_len(총 프레임 수)도 반환하도록 수정됨
+                    # 수어 단어 예측 수행
                     last_words, last_raw_preds, T_len = predict_sequence(
                         sign_model, raw_features, idx_to_gloss, blank_idx, DEVICE
                     )
 
-                    print("── Beam Search 결과 (필터 전) ──")
+                    # ==========================================================
+                    # [수정] 유연한 프레임 윈도우 및 전체 녹화 구간 기반 동기화
+                    # ==========================================================
+                    
+                    # 허용 오차 범위를 넓히거나, 단어가 아예 매칭되지 않을 경우를 대비한 안전 장치
+                    frame_margin = 15  # 오차 허용 범위를 대폭 확대 (±15프레임)
+                    synchronized_tokens = []
+
+                    valid_preds = []
                     for gloss, prob, f_idx in last_raw_preds:
-                        marker = "✓" if gloss in last_words else "✗"
-                        print(f"  {marker} {gloss:<20} conf={prob:.3f}")
-                    print(f"── 최종 결과: {' / '.join(last_words) if last_words else 'No words detected'}")
-                    print()
+                        if REMOVE_UNK and gloss == "<UNK>":
+                            continue
+                        if prob >= TOKEN_CONFIDENCE_THRESHOLD:
+                            valid_preds.append((gloss, f_idx))
 
-                    # 수지 신호(단어) 타임라인 출력 추가
-                    print("── 수지 신호(단어) 타임라인 ──")
-                    if not last_words:
-                        print("  감지된 수지 신호 없음")
+                    # 만약 모델이 단어는 인식했으나 프레임 매칭이 안 되는 경우를 위한 폴백용 전체 녹화 NMS 수집
+                    global_matched_nms = set()
+                    for nms_key, start_f, end_f in nms_frame_segments:
+                        corrected_key = "Ebf" if nms_key == "EBf" else nms_key
+                        global_matched_nms.add(corrected_key)
+
+                    if valid_preds:
+                        for gloss, f_idx in valid_preds:
+                            word_abs_frame = recording_start_frame + f_idx
+                            matched_nms = set()
+                            
+                            for nms_key, start_f, end_f in nms_frame_segments:
+                                # 넓어진 마진 및 구간 포함 여부 확인
+                                if (start_f - frame_margin) <= word_abs_frame <= (end_f + frame_margin) or \
+                                   (start_f <= word_abs_frame <= end_f):
+                                    corrected_key = "Ebf" if nms_key == "EBf" else nms_key
+                                    matched_nms.add(corrected_key)
+
+                            if matched_nms:
+                                nms_str = ", ".join(sorted(list(matched_nms)))
+                                synchronized_tokens.append(f"{gloss}({nms_str})")
+                            else:
+                                synchronized_tokens.append(gloss)
+                        
+                        sllm_input_str = " ".join(synchronized_tokens)
                     else:
-                        time_per_frame = elapsed / T_len if T_len > 0 else 0
-                        for gloss, prob, f_idx in last_raw_preds:
-                            if gloss in last_words:
-                                timestamp = f_idx * time_per_frame
-                                print(f"  {gloss:<10} 발생 시점: {timestamp:5.2f}s (conf: {prob:.3f})")
-                    print()
+                        # 단어 인식이 안 되었더라도 비수지 신호가 감지되었다면 출력 유지
+                        if global_matched_nms:
+                            nms_str = ", ".join(sorted(list(global_matched_nms)))
+                            sllm_input_str = f"({nms_str})"
+                        else:
+                            sllm_input_str = ""
 
-                    print_nms_timeline(nms_segments)
-                    print()
+                    # 4. JSON 형식 구성
+                    sllm_json = {
+                        "instruction": (
+                            "당신은 의료 수어 번역기이다. 입력 단어와 괄호 안 비수지 태그만 근거로 자연스러운 한국어 문장 하나를 출력한다. "
+                            "입력에 없는 증상, 검사, 진단, 치료 정보는 추가하지 않는다.\n\n"
+                            "비수지 태그:\n"
+                            "Mo1=입 벌림/강조, Mmo=미소/긍정, Mctr=입 다묾/참음·노력, Hno=고개 끄덕임/긍정·문장종결, "
+                            "Hs=고개 저음/부정, Ebf=눈썹 찌푸림/심각·경고, Ci=볼 부풀림/상태강조, Ebu=눈썹 올림/의문·강조."
+                        ),
+                        "input": sllm_input_str
+                    }
 
+                    print("\n── sLLM 파인튜닝 모델 입력용 JSON ──")
+                    print(json.dumps(sllm_json, ensure_ascii=False, indent=2))
+                    print("──────────────────────────────────────\n")
+                    
     cap.release()
     if writer:
         writer.release()
