@@ -491,10 +491,10 @@ export const CameraView: React.FC<CameraViewProps> = ({
                 </div>
                 <ArrowDown className="w-5 h-5 text-brand-green mt-1" />
               </div>
-              <h3 className="mt-5 text-xl font-bold text-white tracking-wide">화면을 눌러 실행하세요</h3>
+              <h3 className="mt-5 text-xl font-bold text-white tracking-wide">화면을 눌러 수어 번역 시작하기</h3>
               <p className="text-sm text-neutral-300 max-w-sm mt-2 font-medium">
-                클라이언트에서 프레임별 키포인트를 추출해 백엔드로 전송합니다.
-              </p>
+                카메라를 통해 환자의 수어 동작을 인식하고 실시간으로 번역합니다.
+              </p>  
               {cameraError && <p className="mt-3 text-xs text-red-200">{cameraError}</p>}
             </motion.div>
           )}

@@ -389,33 +389,6 @@ export default function App() {
                 transition={{ duration: 0.25 }}
                 className="w-full flex flex-col items-center gap-6"
               >
-                <div className="w-full max-w-3xl flex flex-col sm:flex-row sm:items-center sm:justify-between px-4 py-3 bg-white border border-neutral-100 rounded-xl shadow-2xs gap-3">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-full bg-secondary-container/10 flex items-center justify-center text-secondary">
-                      <Activity className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <span className="text-sm font-bold text-on-surface leading-none">분당서울대병원 EMR 연동 솔루션</span>
-                      <p className="text-xs text-neutral-400 font-medium mt-1">
-                        클라이언트 키포인트 추출, 백엔드 중계, AI 서버 예측 구조로 동작합니다.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs bg-neutral-150 border border-neutral-250 text-neutral-600 font-bold px-2 py-0.5 rounded-sm">
-                      {logs.length}개 누적 번역
-                    </span>
-                    <button
-                      onClick={() => setIsHelpOpen(true)}
-                      className="text-xs text-secondary hover:underline flex items-center gap-0.5 font-bold cursor-pointer"
-                    >
-                      <Info className="w-3.5 h-3.5" />
-                      도움말 가이드
-                    </button>
-                  </div>
-                </div>
-
                 <div className="w-full max-w-3xl flex flex-col items-center">
                   <CameraView
                     isActive={cameraActive}
@@ -476,20 +449,10 @@ export default function App() {
       <footer className="w-full py-4 border-t border-neutral-250 bg-white text-center text-[11px] text-neutral-400 font-medium">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2.5">
           <p>© 2026 SignLink. All rights reserved.</p>
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-              EMR 보안서버 수어망 대기 중
-            </span>
-            <span>|</span>
-            <span className="text-[10px] bg-neutral-100 text-neutral-500 border border-neutral-200 px-1.5 py-0.5 rounded">
-              Atkinson Accessibility Standards Approved
-            </span>
-          </div>
         </div>
       </footer>
 
-      <InstructionsModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
+      <InstructionsModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} isLoggedIn={user.isLoggedIn} />
     </div>
   )
 }

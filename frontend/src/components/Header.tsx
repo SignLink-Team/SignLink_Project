@@ -40,9 +40,6 @@ export const Header = ({
           <div>
             <h1 className="text-2xl font-bold font-sans text-on-surface tracking-tight flex items-center gap-1.5 leading-none">
               SignLink
-              <span className="text-xs bg-secondary-container text-secondary px-1.5 py-0.5 rounded-sm font-semibold font-hyper">
-                PRO v1.2
-              </span>
             </h1>
             <p className="text-sm text-on-surface-variant font-medium mt-1">
               의료진을 위한 실시간 수어 번역 서비스
@@ -55,10 +52,12 @@ export const Header = ({
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={onHelpClick}
-            className="p-2 text-on-surface-variant hover:text-primary hover:bg-neutral-50 rounded-full transition-colors duration-150"
+            className="p-2 text-on-surface-variant hover:text-primary hover:bg-neutral-50 rounded-full transition-colors duration-150
+             hover:underline flex items-center gap-0.5 font-bold cursor-pointer"
             title="사용 방법"
           >
             <HelpCircle className="w-5 h-5" />
+            도움말
           </motion.button>
 
           {user.isLoggedIn ? (

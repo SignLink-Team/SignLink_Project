@@ -1,13 +1,14 @@
 import { AnimatePresence, motion } from 'motion/react'
-import { ArrowRight, Camera, Hand, HeartPulse, Save, ShieldCheck, X } from 'lucide-react'
+import { ArrowRight, Camera, Hand, HeartPulse, Save, ShieldCheck, X, Pencil } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 interface InstructionsModalProps {
   isOpen: boolean
   onClose: () => void
+  isLoggedIn?: boolean
 }
 
-export const InstructionsModal = ({ isOpen, onClose }: InstructionsModalProps) => {
+export const InstructionsModal = ({ isOpen, onClose, isLoggedIn }: InstructionsModalProps) => {
   return (
     <AnimatePresence>
       {isOpen && (
@@ -53,27 +54,37 @@ export const InstructionsModal = ({ isOpen, onClose }: InstructionsModalProps) =
                 <GuideStep
                   number="1"
                   icon={<Camera className="w-3.5 h-3.5" />}
-                  title="입력 방식 선택"
-                  body="실시간 카메라 또는 동영상 업로드를 선택하면 클라이언트에서 프레임별 키포인트를 추출해 백엔드로 전송합니다."
+                  title="카메라 맞추기"
+                  body="환자의 상반신과 손동작이 화면 중앙에 잘 보이도록 자리에 위치해주세요."
                 />
                 <GuideStep
                   number="2"
                   icon={<Hand className="w-3.5 h-3.5" />}
                   title="AI 예측"
-                  body="백엔드는 WebSocket으로 AI 서버에 키포인트를 중계하고, AI 서버는 누적 좌표를 기반으로 글로스와 번역 결과를 반환합니다."
+                  body="AI가 사용자의 수어 동작을 분석하여 문장으로 번역한 결과를 화면에 실시간으로 표시합니다."
                 />
                 <GuideStep
                   number="3"
                   icon={<Save className="w-3.5 h-3.5" />}
-                  title="자동 저장"
-                  body="의료진 로그인 후 자동 저장을 ON으로 두면 확정된 번역 결과가 MongoDB translation_log에 저장됩니다."
+                  title="번역 내용 저장"
+                  body="의료진으로 로그인한 경우, 자동 저장을 켜두면 번역된 내용을 진료 기록으로 저장할 수 있습니다."
                 />
+                {isLoggedIn && (
+                <>
                 <GuideStep
                   number="4"
                   icon={<ShieldCheck className="w-3.5 h-3.5" />}
-                  title="기록 관리"
-                  body="기록 보기에서 저장된 번역을 검색, 필터링, 복사, 삭제할 수 있습니다."
+                  title="기록 확인 및 관리"
+                  body="저장된 번역 기록을 언제든 다시 조회·복사하여 진료에 활용하거나 삭제할 수 있습니다."
                 />
+                <GuideStep
+                  number="5"
+                  icon={<Pencil className="w-3.5 h-3.5" />}
+                  title="환자 ID 등록"
+                  body="저장된 번역 기록에 환자 ID를 등록할 수 있습니다."
+                />
+                </>
+                )}
               </div>
             </div>
 

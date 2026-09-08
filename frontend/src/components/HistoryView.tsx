@@ -1,6 +1,6 @@
 import { FormEvent, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { ArrowLeft, Check, Clock, Copy, FileSpreadsheet, Filter, Plus, Search, Trash2 } from 'lucide-react'
+import { ArrowLeft, Check, Clock, Copy, FileSpreadsheet, Filter, Plus, Search, Trash2, Pencil } from 'lucide-react'
 import { MEDICAL_CATEGORIES } from '../data'
 import { TranslationLog } from '../types'
 
@@ -220,13 +220,13 @@ export const HistoryView = ({
                 </select>
               </div>
               <div className="flex gap-2">
-                <button type="submit" className="w-full px-4 py-2 bg-secondary text-white rounded-lg text-sm font-bold hover:bg-secondary-dark">
+                <button type="submit" className="w-full px-9 py-2 bg-secondary text-white rounded-lg text-sm font-bold hover:bg-secondary-dark self-end">
                   저장
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowAddForm(false)}
-                  className="px-3 py-2 bg-neutral-200 text-on-surface rounded-lg text-sm font-bold hover:bg-neutral-300"
+                  className="w-full px-3 py-2 bg-neutral-200 text-on-surface rounded-lg text-sm font-bold hover:bg-neutral-300 self-end"
                 >
                   취소
                 </button>
@@ -321,12 +321,6 @@ export const HistoryView = ({
                           <span className="text-xs font-bold bg-secondary-container/20 text-secondary border border-secondary-container/50 px-2 py-0.5 rounded-sm">
                             환자: {log.patient_id || 'none'}
                           </span>
-                          <button
-                            onClick={() => startEditPatientId(log)}
-                            className="text-xs font-bold bg-white text-primary border border-primary/30 hover:bg-primary/5 px-2 py-0.5 rounded-sm"
-                          >
-                            환자 ID 수정
-                          </button>
                         </>
                       )}
 
@@ -358,6 +352,13 @@ export const HistoryView = ({
 
                   <div className="flex items-center gap-1">
                     <button
+                      onClick={() => startEditPatientId(log)}
+                      className="p-1.5 hover:bg-neutral-100 rounded-md text-neutral-400 hover:text-primary transition-colors duration-100"
+                      title="환자 ID 수정"
+                      >
+                      <Pencil className="w-4 h-4" />
+                    </button>  
+                    <button
                       onClick={() => handleCopy(log.log_id, log.translated_text)}
                       className="p-1.5 hover:bg-neutral-100 rounded-md text-neutral-400 hover:text-primary transition-colors duration-100"
                       title="클립보드에 복사"
@@ -371,6 +372,7 @@ export const HistoryView = ({
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
+
                   </div>
                 </div>
               </motion.div>
