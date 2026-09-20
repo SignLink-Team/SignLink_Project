@@ -1,0 +1,28 @@
+@import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&family=Public+Sans:ital,wght@0,100..900;1,100..900&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #005eb8;
+  --color-primary-dark: #00478d;
+  --color-primary-container: #005eb8;
+  --color-primary-light: #c8daff;
+  --color-secondary: #006a68;
+  --color-secondary-container: #79f2f0;
+  --color-secondary-dark: #004645;
+  --color-brand-emerald: #0b5151; /* Dark emerald for the camera viewfinder card, as in screen */
+  --color-brand-green: #0fc29e;
+  --color-bg-base: #f9f9ff;
+  --color-on-surface: #111c2d;
+  --color-on-surface-variant: #424752;
+
+  --font-sans: 'Public Sans', system-ui, -apple-system, sans-serif;
+  --font-hyper: 'Atkinson Hyperlegible', sans-serif;
+}
+
+@layer utilities {
+  /* High contrast readable classes */
+  .text-shadow-glow {
+    text-shadow: 0 0 12px rgba(15, 194, 158, 0.4);
+  }
+}
+
