@@ -178,6 +178,7 @@ export default function App() {
         if (!resolved) {
           resolved = true
           setError('백엔드 WebSocket 연결 시간이 초과되었습니다.')
+          socket.close()
           resolve(false)
         }
       }, 8000)
@@ -196,16 +197,28 @@ export default function App() {
       }
 
       socket.onmessage = (event) => {
-        const message = JSON.parse(event.data)
+        let message: Record<string, unknown>
+
+        try {
+          message = JSON.parse(event.data) as Record<string, unknown>
+        } catch {
+          setError('WebSocket에서 올바르지 않은 응답을 받았습니다.')
+          return
+        }
 
         if (message.type === 'error') {
-          setError(message.message || 'WebSocket 처리 중 오류가 발생했습니다.')
+          setError(
+            typeof message.message === 'string'
+              ? message.message
+              : 'WebSocket 처리 중 오류가 발생했습니다.',
+          )
           setIsPredicting(false)
           if (!resolved) {
             resolved = true
             window.clearTimeout(timeout)
             resolve(false)
           }
+          socket.close()
           return
         }
 
@@ -219,13 +232,38 @@ export default function App() {
           return
         }
 
+        if (message.type === 'partial') {
+          const words = Array.isArray(message.words)
+            ? message.words.filter((word): word is string => typeof word === 'string')
+            : []
+          const glossResult =
+            typeof message.gloss_result === 'string'
+              ? message.gloss_result
+              : words.join(' ')
+
+          if (glossResult) {
+            setActiveTranslation(glossResult)
+            setActiveGlossResult(glossResult)
+            setTranslationCandidates([])
+          }
+          return
+        }
+
         if (message.type === 'translation') {
-          const words = Array.isArray(message.words) ? message.words : []
+          const words = Array.isArray(message.words)
+            ? message.words.filter((word): word is string => typeof word === 'string')
+            : []
           const candidates = Array.isArray(message.translation_candidates)
             ? (message.translation_candidates as TranslationCandidate[])
             : []
-          const glossResult = message.gloss_result || words.join(' ')
-          const text = message.text || glossResult || '인식된 수어가 없습니다.'
+          const glossResult =
+            typeof message.gloss_result === 'string'
+              ? message.gloss_result
+              : words.join(' ')
+          const text =
+            typeof message.text === 'string' && message.text
+              ? message.text
+              : glossResult || '인식된 수어가 없습니다.'
           const confidence = Number(message.confidence ?? 0)
 
           setActiveTranslation(text)
@@ -238,6 +276,27 @@ export default function App() {
             setLastLogId(Number(message.log_id))
             loadLogs().catch((err) => setError(err.message))
           }
+
+          socket.close(1000, 'translation complete')
+        }
+      }
+
+      socket.onclose = (event) => {
+        if (wsRef.current !== socket) return
+
+        wsRef.current = null
+        setIsPredicting(false)
+
+        if (!resolved) {
+          resolved = true
+          window.clearTimeout(timeout)
+          setError('번역 WebSocket 연결이 시작되기 전에 종료되었습니다.')
+          resolve(false)
+          return
+        }
+
+        if (event.code !== 1000 && event.code !== 1005) {
+          setError('번역 WebSocket 연결이 예기치 않게 종료되었습니다.')
         }
       }
     })
@@ -248,17 +307,42 @@ export default function App() {
     return await openTranslationSocket()
   }
 
-  const handleKeypointFrame = async (keypoints: number[]) => {
+  const handleKeypointFrame = async (keypoints: number[], frameId: number) => {
     const socket = wsRef.current
     const activeSession = activeSessionRef.current
-    if (!socket || socket.readyState !== WebSocket.OPEN || !activeSession) return
-    socket.send(JSON.stringify({ type: 'frame', session_id: activeSession.id, keypoints }))
+    if (!socket || socket.readyState !== WebSocket.OPEN || !activeSession) {
+      throw new Error('번역 WebSocket이 연결되어 있지 않습니다.')
+    }
+    socket.send(
+      JSON.stringify({
+        type: 'frame',
+        session_id: activeSession.id,
+        frame_id: frameId,
+        keypoints,
+      }),
+    )
+  }
+
+  const handleWordBoundary = async () => {
+    const socket = wsRef.current
+    const activeSession = activeSessionRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN || !activeSession) {
+      throw new Error('번역 WebSocket이 연결되어 있지 않습니다.')
+    }
+    socket.send(
+      JSON.stringify({
+        type: 'word_boundary',
+        session_id: activeSession.id,
+      }),
+    )
   }
 
   const handleStreamEnd = async () => {
     const socket = wsRef.current
     const activeSession = activeSessionRef.current
-    if (!socket || socket.readyState !== WebSocket.OPEN || !activeSession) return
+    if (!socket || socket.readyState !== WebSocket.OPEN || !activeSession) {
+      throw new Error('번역 WebSocket이 연결되어 있지 않습니다.')
+    }
     setIsPredicting(true)
     socket.send(JSON.stringify({ type: 'end', session_id: activeSession.id, auto_save: autoSave }))
   }
@@ -401,6 +485,7 @@ export default function App() {
                     onTriggerTranslation={handleTriggerTranslation}
                     onStreamStart={handleStreamStart}
                     onKeypointFrame={handleKeypointFrame}
+                    onWordBoundary={handleWordBoundary}
                     onStreamEnd={handleStreamEnd}
                     isPredicting={isPredicting}
                   />

@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     ai_predict_path: str = "/api/v1/predict"
     ai_predict_ws_path: str = "/ws/predict"
     ai_request_timeout_seconds: float = 5.0
+    ai_stream_result_timeout_seconds: float = 60.0
 
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000"
 
