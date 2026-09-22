@@ -1,4 +1,6 @@
+import asyncio
 import json
+from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
@@ -6,6 +8,7 @@ from bson import ObjectId
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
 
 from app.auth.jwt import decode_access_token
+from app.config import settings
 from app.database import get_database
 from app.models.translation import WSErrorMessage, WSTranslationMessage
 from app.routers.translations import infer_category
@@ -20,7 +23,9 @@ class ConnectionManager:
         self.active_connections: dict[str, list[WebSocket]] = {}
 
     def register(self, session_id: str, websocket: WebSocket) -> None:
-        self.active_connections.setdefault(session_id, []).append(websocket)
+        connections = self.active_connections.setdefault(session_id, [])
+        if websocket not in connections:
+            connections.append(websocket)
 
     def disconnect(self, session_id: str, websocket: WebSocket) -> None:
         connections = self.active_connections.get(session_id, [])
@@ -30,8 +35,12 @@ class ConnectionManager:
             self.active_connections.pop(session_id, None)
 
     async def broadcast(self, session_id: str, message: dict) -> None:
-        for connection in self.active_connections.get(session_id, []):
-            await connection.send_json(message)
+        connections = list(self.active_connections.get(session_id, []))
+        for connection in connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                self.disconnect(session_id, connection)
 
 
 manager = ConnectionManager()
@@ -67,7 +76,88 @@ async def translate_websocket(
 
     session_id: str | None = None
     ai_stream: AIStreamClient | None = None
+    ai_receiver_task: asyncio.Task[None] | None = None
+    ai_final_result: asyncio.Future[dict] | None = None
     active_consultation: dict | None = None
+
+    async def stop_ai_stream() -> None:
+        nonlocal ai_stream, ai_receiver_task, ai_final_result
+
+        receiver_task = ai_receiver_task
+        ai_receiver_task = None
+
+        if receiver_task and receiver_task is not asyncio.current_task():
+            receiver_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await receiver_task
+
+        if ai_final_result and not ai_final_result.done():
+            ai_final_result.cancel()
+        ai_final_result = None
+
+        stream = ai_stream
+        ai_stream = None
+        if stream:
+            await stream.close()
+
+    async def relay_ai_messages(
+        stream: AIStreamClient,
+        final_result: asyncio.Future[dict],
+        stream_session_id: str,
+    ) -> None:
+        try:
+            while True:
+                message = await stream.receive()
+                message_type = message.get("type")
+
+                if message_type == "partial":
+                    await websocket.send_json(
+                        {
+                            **message,
+                            "session_id": stream_session_id,
+                        }
+                    )
+                    continue
+
+                if message_type in {"translation", "error"}:
+                    if not final_result.done():
+                        final_result.set_result(message)
+
+                    if message_type == "error":
+                        await websocket.send_json(
+                            WSErrorMessage(
+                                message=message.get(
+                                    "message",
+                                    "AI server prediction failed",
+                                )
+                            ).model_dump()
+                        )
+                    return
+
+                print(
+                    f"[BACKEND] ignored AI websocket message: {message_type}",
+                    flush=True,
+                )
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            error_message = (
+                str(exc)
+                if isinstance(exc, AIServerError)
+                else f"AI server websocket receive failed: {exc}"
+            )
+            if not final_result.done():
+                final_result.set_result(
+                    {
+                        "type": "error",
+                        "message": error_message,
+                    }
+                )
+            with suppress(Exception):
+                await websocket.send_json(
+                    WSErrorMessage(message=error_message).model_dump()
+                )
 
     try:
         while True:
@@ -111,47 +201,95 @@ async def translate_websocket(
                     await websocket.send_json(WSErrorMessage(message="Session not found").model_dump())
                     continue
 
-                if ai_stream:
-                    await ai_stream.close()
-                ai_stream = AIStreamClient()
+                await stop_ai_stream()
+                new_ai_stream = AIStreamClient()
                 try:
-                    await ai_stream.connect()
+                    await new_ai_stream.connect()
                 except AIServerError as exc:
                     await websocket.send_json(WSErrorMessage(message=str(exc)).model_dump())
-                    ai_stream = None
                     continue
+
+                ai_stream = new_ai_stream
+                ai_final_result = asyncio.get_running_loop().create_future()
+                ai_receiver_task = asyncio.create_task(
+                    relay_ai_messages(
+                        ai_stream,
+                        ai_final_result,
+                        session_id,
+                    ),
+                    name=f"ai-stream-receiver-{session_id}",
+                )
 
                 await websocket.send_json({"type": "stream_started", "session_id": session_id})
                 continue
 
             if msg_type == "frame":
                 keypoints = data.get("keypoints")
+                frame_id = data.get("frame_id")
+                # 프론트가 계산한 정지 여부. 필드가 없으면(구버전 클라이언트)
+                # None으로 두어 AI 서버가 자체 motion gate로 폴백하게 한다.
+                still = data.get("still")
                 print(
                     "[BACKEND] frame received:",
-                    len(keypoints) if keypoints else None,
+                    {
+                        "frame_id": frame_id,
+                        "values": len(keypoints) if isinstance(keypoints, list) else None,
+                        "still": still,
+                    },
                     flush=True,
                 )
-                if not ai_stream or not session_id:
+                if ai_stream is None or session_id is None or ai_final_result is None:
                     print("[BACKEND] ERROR: ai_stream is None", flush=True)
                     await websocket.send_json(WSErrorMessage(message="stream is not started").model_dump())
+                    continue
+                if ai_final_result.done():
+                    await stop_ai_stream()
+                    await websocket.send_json(
+                        WSErrorMessage(message="AI stream is no longer active").model_dump()
+                    )
                     continue
                 if not isinstance(keypoints, list):
                     await websocket.send_json(WSErrorMessage(message="keypoints must be a list").model_dump())
                     continue
+                if len(keypoints) != 261:
+                    await websocket.send_json(
+                        WSErrorMessage(
+                            message=f"expected 261 keypoints, got {len(keypoints)}"
+                        ).model_dump()
+                    )
+                    continue
+                if type(frame_id) is not int or frame_id < 0:
+                    await websocket.send_json(
+                        WSErrorMessage(
+                            message="frame_id must be a non-negative integer"
+                        ).model_dump()
+                    )
+                    continue
                 try:
-                    await ai_stream.add_frame(keypoints)
+                    await ai_stream.add_frame(keypoints, frame_id, still=still)
                     print("[BACKEND] frame sent to AI server", flush=True)
                 except AIServerError as exc:
                     await websocket.send_json(WSErrorMessage(message=str(exc)).model_dump())
                     continue
-                await websocket.send_json({"type": "frame_received"})
+                await websocket.send_json(
+                    {
+                        "type": "frame_received",
+                        "frame_id": frame_id,
+                    }
+                )
                 continue
 
             if msg_type == "word_boundary":
                 # 짧은 정지(단어 경계): AI서버에게 "지금까지 쌓인 프레임을 디코딩해서
                 # gloss만 누적해두라"고 알린다. LLM은 호출 안 되고, 세션/연결은 그대로 유지된다.
-                if not ai_stream or not session_id:
+                if ai_stream is None or session_id is None or ai_final_result is None:
                     await websocket.send_json(WSErrorMessage(message="stream is not started").model_dump())
+                    continue
+                if ai_final_result.done():
+                    await stop_ai_stream()
+                    await websocket.send_json(
+                        WSErrorMessage(message="AI stream is no longer active").model_dump()
+                    )
                     continue
                 try:
                     await ai_stream.word_boundary()
@@ -162,18 +300,47 @@ async def translate_websocket(
                 continue
 
             if msg_type == "end":
-                if not ai_stream or not session_id or not active_consultation:
+                if (
+                    ai_stream is None
+                    or ai_final_result is None
+                    or session_id is None
+                    or not active_consultation
+                ):
                     await websocket.send_json(WSErrorMessage(message="stream is not started").model_dump())
                     continue
 
                 try:
-                    ai_result = await ai_stream.finish()
+                    await ai_stream.request_finish()
+                    ai_result = await asyncio.wait_for(
+                        asyncio.shield(ai_final_result),
+                        timeout=settings.ai_stream_result_timeout_seconds,
+                    )
                 except AIServerError as exc:
                     await websocket.send_json(WSErrorMessage(message=str(exc)).model_dump())
+                    await stop_ai_stream()
                     continue
-                finally:
-                    await ai_stream.close()
-                    ai_stream = None
+                except asyncio.TimeoutError:
+                    await websocket.send_json(
+                        WSErrorMessage(
+                            message="AI server final response timed out"
+                        ).model_dump()
+                    )
+                    await stop_ai_stream()
+                    continue
+
+                await stop_ai_stream()
+
+                if ai_result.get("type") == "error":
+                    # relay_ai_messages already forwarded this error.
+                    continue
+
+                if ai_result.get("type") != "translation":
+                    await websocket.send_json(
+                        WSErrorMessage(
+                            message="AI server returned an invalid final response"
+                        ).model_dump()
+                    )
+                    continue
 
                 words = ai_result.get("words") or []
                 gloss_result = ai_result.get("gloss_result") or " ".join(words)
@@ -319,13 +486,16 @@ async def translate_websocket(
             await manager.broadcast(session_id, response)
 
     except WebSocketDisconnect:
-        if ai_stream:
-            await ai_stream.close()
+        pass
+    except Exception as exc:
+        print(f"[BACKEND] websocket error: {exc}", flush=True)
+        with suppress(Exception):
+            await websocket.send_json(
+                WSErrorMessage(message="WebSocket processing failed").model_dump()
+            )
+        with suppress(Exception):
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+    finally:
+        await stop_ai_stream()
         if session_id:
             manager.disconnect(session_id, websocket)
-    except Exception:
-        if ai_stream:
-            await ai_stream.close()
-        if session_id:
-            manager.disconnect(session_id, websocket)
-        await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
