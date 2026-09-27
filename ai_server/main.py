@@ -89,8 +89,17 @@ MIN_COLLECT_FRAMES = 12
 POST_COMMIT_COOLDOWN_FRAMES = 0
 
 STREAM_STABILITY_K = 3
-STABILITY_PROB_THRESHOLD = 0.50
-STABILITY_END_TOL = 6
+# stride(8프레임)마다 한 번씩만 추론하므로, 연속된 두 관측치의 global_end는
+# 구조적으로 거의 항상 stride만큼 벌어진다. 이 값이 stride보다 작으면
+# stable-k가 설계상 거의 통과할 수 없어 매번 timeout(느린 경로)로만
+# 빠지게 된다 — 실측 로그에서 모든 커밋이 timeout이었던 주된 원인.
+# stride + 여유분으로 설정한다.
+STABILITY_END_TOL = STREAM_STRIDE + 4
+# 실측 confidence 분포(연속 수어 실사용 로그)가 0.15~0.52 사이였고
+# 0.50을 넘는 경우가 거의 없어, stable-k가 사실상 죽어있었다. 이 값을
+# 낮추면 확정이 빨라지지만 오탐 가능성도 커지므로, 배포 후 실측하며
+# 재조정할 것.
+STABILITY_PROB_THRESHOLD = 0.35
 
 PREDICTION_OUTPUT_DIR = ROOT_DIR / "ai_server" / "prediction_outputs"
 PREDICTION_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -493,8 +502,12 @@ def _sign_worker_main(
       - 남은 프레임은 다음 단어의 문맥으로 유지
     """
     try:
-        torch.set_num_threads(2)
+        # CPU inference라면 코어 수에 맞춰 intra-op 스레드를 늘린다.
+        # 고정값 2는 근거 없는 절충값이었고, 배포 환경마다 재튜닝이 필요하다.
+        cpu_threads = max(2, (os.cpu_count() or 4) // 2)
+        torch.set_num_threads(cpu_threads)
         torch.set_num_interop_threads(1)
+        print(f"[SIGN WORKER] torch threads: {cpu_threads}", flush=True)
     except RuntimeError:
         pass
 
@@ -945,9 +958,13 @@ def _sign_worker_main(
                     and max(ends) - min(ends) <= stability_end_tol
                 )
 
-            # Beam은 일반 확정 gate가 아니다. debug/force flush 보조용으로만 사용한다.
+            # Beam은 일반 확정 gate가 아니다. 실제로 쓰이는 곳은 timeout
+            # 강제 확정 시 confidence 보정뿐이다(stable-k는 안 쓰고, ended는
+            # force_flush가 자체적으로 계산한다). 매 추론마다 돌리면 순수
+            # Python 구현인 beam search가 CPU를 크게 잡아먹어 실시간 처리를
+            # 못 따라가고 lag가 누적되므로, 꼭 필요한 timeout 시점에만 실행한다.
             beam_result = None
-            if first_closed:
+            if timeout and first_closed:
                 beam_preds = [p for p in ctc_beam_search_decode(log_probs, idx_to_gloss, blank_idx, BEAM_WIDTH)
                               if not (REMOVE_UNK and p[0] == "<UNK>")]
                 if beam_preds:
@@ -978,26 +995,30 @@ def _sign_worker_main(
                 len(buffer) >= MIN_COLLECT_FRAMES
             )
 
-            if can_commit or ended or timeout:
+            if ended:
+                # 진짜 motion 정지 시점. 새 프레임이 더 안 들어올 수 있으므로
+                # 지금 이 순간 buffer에 남아있는 내용을 전부 소진해야 한다.
+                # 토큰 하나만 확정하고 넘어가면, 그 뒤에 남은 완성된 단어가
+                # 있어도 다음 motion이 시작되기 전까지는 영영 검사되지 않는다.
+                force_flush("motion-end")
+                continue
+
+            if can_commit or timeout:
                 committed = commit_from_buffer(
                     greedy_preds,
                     snapshot_ids,
                     beam_result=beam_result,
-                    force=(ended or timeout),
-                    reason=("stable-k" if can_commit else "motion-end" if ended else "timeout"),
+                    force=timeout,
+                    reason=("stable-k" if can_commit else "timeout"),
                 )
                 if committed:
                     try: result_queue.put_nowait(committed)
                     except Exception: pass
-                    # ended(진짜 motion 정지)는 새 세그먼트의 시작이므로
-                    # blocked_gloss를 포함해 상태를 전부 초기화한다.
-                    # timeout은 진짜 경계가 아니라 buffer가 가득 차서
-                    # 강제로 자른 것뿐이므로, blocked_gloss는 유지해서
-                    # 같은 연속 동작이 반복 확정되지 않게 막는다.
-                    if ended:
-                        clear_motion_state()
-                    elif timeout:
-                        # motion 상태/버퍼는 계속 유지하되 stability만 리셋
+                    if timeout:
+                        # timeout은 진짜 경계가 아니라 buffer가 가득 차서
+                        # 강제로 자른 것뿐이므로, blocked_gloss는 유지해서
+                        # 같은 연속 동작이 반복 확정되지 않게 막는다.
+                        # motion 상태/버퍼는 계속 유지하되 stability만 리셋.
                         stability_history = []
 
     except Exception as exc:
