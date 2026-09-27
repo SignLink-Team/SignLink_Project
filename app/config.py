@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     ai_predict_path: str = "/api/v1/predict"
     ai_predict_ws_path: str = "/ws/predict"
     ai_request_timeout_seconds: float = 5.0
+    # websocket.py의 "end" 핸들러가 AI 서버의 최종 "translation" 응답을
+    # 기다릴 때 쓰는 타임아웃. 이 속성이 없으면 스트림 종료 시점마다
+    # AttributeError로 웹소켓이 끊기고 최종 결과가 프론트에 전달되지
+    # 못한다. AI 서버의 force_flush는 최악의 경우 buffer를 최대 8회
+    # 반복 디코딩(각 회차 forward + beam search)하므로, CPU 환경에서는
+    # 그 시간을 넉넉히 덮을 수 있게 잡는다. 실측 후 조정할 것.
+    ai_stream_result_timeout_seconds: float = 15.0
 
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000"
 
