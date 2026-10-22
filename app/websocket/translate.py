@@ -119,6 +119,16 @@ async def translate_websocket(
                     )
                     continue
 
+                if message_type == "nms":
+                    # 비수지 실시간 결과는 그대로 프론트로 중계한다.
+                    await websocket.send_json(
+                        {
+                            **message,
+                            "session_id": stream_session_id,
+                        }
+                    )
+                    continue
+
                 if message_type in {"translation", "error"}:
                     if not final_result.done():
                         final_result.set_result(message)
@@ -229,12 +239,20 @@ async def translate_websocket(
                 # 프론트가 계산한 정지 여부. 필드가 없으면(구버전 클라이언트)
                 # None으로 두어 AI 서버가 자체 motion gate로 폴백하게 한다.
                 still = data.get("still")
+                # 비수지(NMS)용 얼굴 랜드마크(468점 x xyz = 1404개 값). 보조 기능이므로
+                # 형식이 맞지 않으면 에러로 스트림을 막지 않고 조용히 버린다.
+                face = data.get("face")
+                face_w = data.get("face_w")
+                face_h = data.get("face_h")
+                if face is not None and (not isinstance(face, list) or len(face) != 1404):
+                    face = None
                 print(
                     "[BACKEND] frame received:",
                     {
                         "frame_id": frame_id,
                         "values": len(keypoints) if isinstance(keypoints, list) else None,
                         "still": still,
+                        "face": len(face) if face else None,
                     },
                     flush=True,
                 )
@@ -266,7 +284,14 @@ async def translate_websocket(
                     )
                     continue
                 try:
-                    await ai_stream.add_frame(keypoints, frame_id, still=still)
+                    await ai_stream.add_frame(
+                        keypoints,
+                        frame_id,
+                        still=still,
+                        face=face,
+                        face_w=face_w,
+                        face_h=face_h,
+                    )
                     print("[BACKEND] frame sent to AI server", flush=True)
                 except AIServerError as exc:
                     await websocket.send_json(WSErrorMessage(message=str(exc)).model_dump())
@@ -407,6 +432,7 @@ async def translate_websocket(
                 response["requires_review"] = requires_review
                 response["llm_used"] = ai_result.get("llm_used")
                 response["llm_error"] = ai_result.get("llm_error")
+                response["nms_segments"] = ai_result.get("nms_segments") or []
 
                 await manager.broadcast(session_id, response)
                 continue
