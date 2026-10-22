@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import inspect
 import io
 import json
 import multiprocessing as mlp
@@ -10,6 +11,9 @@ import os
 import queue
 import sys
 import tempfile
+import math
+import types
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +22,7 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -56,6 +61,22 @@ from model import SignLanguageModel  # noqa: E402
 from llm_client import LLM_TIMEOUT_SECONDS, translate_gloss  # noqa: E402
 from preprocess import apply_motion_derivatives, extract_normalized_keypoints  # noqa: E402
 
+# 비수지(NMS)는 보조 기능이다. nonmanual_features.py가 없거나 import에 실패해도
+# 수지 인식 서버 자체는 정상 기동해야 하므로 실패를 삼키고 NMS만 비활성화한다.
+try:
+    from nonmanual_features import extract_nonmanual  # noqa: E402
+    NMS_FEATURES_AVAILABLE = True
+    NMS_FEATURES_ERROR = None
+except Exception as _nms_import_exc:  # noqa: BLE001
+    extract_nonmanual = None  # type: ignore[assignment]
+    NMS_FEATURES_AVAILABLE = False
+    NMS_FEATURES_ERROR = repr(_nms_import_exc)
+
+try:
+    from mediapipe.framework.formats import landmark_pb2 as _landmark_pb2
+except Exception:  # noqa: BLE001
+    _landmark_pb2 = None
+
 
 # ============================================================================
 # 1. 공통 설정
@@ -88,6 +109,19 @@ MOTION_END_FRAMES = 8
 MIN_COLLECT_FRAMES = 12
 POST_COMMIT_COOLDOWN_FRAMES = 0
 
+# front_still/motion 시작·종료 판정과 무관한 독립 안전장치.
+# 지금 디코딩하려는 buffer 구간 자체의 프레임 간 diff 표준편차가 이보다
+# 낮으면(=사실상 정지/센서 잡음) 추론 자체를 건너뛴다. raw 261차원
+# keypoint 스케일 기준이며, 실측 데이터로 재보정이 필요한 값이다.
+#
+# 0.01은 실측 없이 잡은 추정치였고, 실제 활발한 수어 동작 중에도 이
+# 값보다 낮은 구간이 있어 추론 자체가 스킵되면서 실시간 스트리밍
+# 커밋이 전부 막히고 stream_end의 force_flush에서만 한꺼번에 쏟아지는
+# 문제가 있었다. [MOTION] 로그로 실제 활동 중 std 분포를 확인해
+# 재보정하기 전까지는 사실상 항상 통과하도록 낮춰둔다(게이트 로직과
+# 계측 로그는 유지 — 값만 무력화).
+MIN_BUFFER_MOTION_STD = 0.0001
+
 STREAM_STABILITY_K = 3
 # stride(8프레임)마다 한 번씩만 추론하므로, 연속된 두 관측치의 global_end는
 # 구조적으로 거의 항상 stride만큼 벌어진다. 이 값이 stride보다 작으면
@@ -97,9 +131,59 @@ STREAM_STABILITY_K = 3
 STABILITY_END_TOL = STREAM_STRIDE + 4
 # 실측 confidence 분포(연속 수어 실사용 로그)가 0.15~0.52 사이였고
 # 0.50을 넘는 경우가 거의 없어, stable-k가 사실상 죽어있었다. 이 값을
-# 낮추면 확정이 빨라지지만 오탐 가능성도 커지므로, 배포 후 실측하며
-# 재조정할 것.
-STABILITY_PROB_THRESHOLD = 0.35
+# 낮추면 확정이 빨라지지만 오탐(정지/잡음을 단어로 오확정) 가능성도
+# 커진다 — 실제로 0.35로 낮췄다가 정지 구간에서 엉뚱한 gloss가 대량
+# 확정되는 문제가 발생해 0.45로 다시 올렸다. 배포 후 실측하며 재조정할 것.
+STABILITY_PROB_THRESHOLD = 0.45
+
+# ----------------------------------------------------------------------------
+# 비수지(NMS) 설정 — 통합 웹캠 스크립트(async_realtime_webcam_fixed.py)와 동일 값
+# ----------------------------------------------------------------------------
+NMS_KEYS = ["Mo1", "Mmo", "Mctr", "Ci", "Ebu", "EBf", "Hno", "Hs"]
+# 서버(timeline/active 판정)와 프론트(src/nms.ts)의 값은 항상 같게 유지할 것.
+NMS_KEY_THRESHOLD = {
+    "Mo1": 0.42, "Mmo": 0.42, "Mctr": 0.42, "Ci": 0.40,
+    "Ebu": 0.45, "EBf": 0.52, "Hno": 0.50, "Hs": 0.40,
+}
+NMS_WINDOW_SIZE = 60
+NMS_MIN_FRAMES = 10
+NMS_INFER_STRIDE = 2
+NMS_SMOOTH_ALPHA = 0.3
+NMS_FACE_VALUES = 468 * 3          # FaceMesh 468점 x (x, y, z)
+NMS_QUEUE_MAXSIZE = 8
+CAMERA_FPS = 30.0                  # 프론트 CAMERA_EXTRACTION_FPS와 동일(타임라인 초 환산용)
+
+NMS_ENABLED = os.getenv("SIGNLINK_NMS_ENABLED", "true").lower() == "true"
+NMS_CKPT_PATH = Path(
+    os.getenv("SIGNLINK_NMS_CKPT", str(MODEL_DIR / "best_nms_finetune_5.pt"))
+)
+NMS_AVAILABLE = NMS_ENABLED and NMS_FEATURES_AVAILABLE and NMS_CKPT_PATH.exists()
+
+# ----------------------------------------------------------------------------
+# 녹화(세션) 전체 디코딩 / LLM 전달 설정
+# ----------------------------------------------------------------------------
+# 한 세션(start~end)에서 보관할 최대 프레임 수(30fps 기준 약 3분). 넘으면 이후 프레임은 녹화하지 않는다.
+MAX_RECORD_FRAMES = 5400
+# 최종(전체 시퀀스) 디코딩에서 <UNK>를 버릴지. 기존 실시간 경로와 같게 REMOVE_UNK를 따른다.
+# False로 바꾸면 <UNK>가 결과에 남아 게이트웨이의 requires_review(UnkSolver) 경로로 간다.
+FINAL_REMOVE_UNK = REMOVE_UNK
+
+# 비수지 키의 한글 의미. LLM 프롬프트에 "코드(의미)" 형태로 들어간다.
+# 비워 두면 코드명만 전달되어 LLM이 해석할 수 없으니 반드시 채울 것.
+NMS_KEY_LABELS: dict[str, str] = {
+    "Mo1": "",
+    "Mmo": "",
+    "Mctr": "",
+    "Ci": "",
+    "Ebu": "",
+    "EBf": "",
+    "Hno": "",
+    "Hs": "",
+}
+# 비수지 감지는 smoothing 때문에 실제 표정보다 늦게 나오므로, 단어 구간과 겹침을 판정할 때 허용하는 여유(초)
+NMS_ALIGN_TOLERANCE_SEC = 0.4
+# LLM에 전달할 때 이보다 짧은 비수지 구간은 깜빡임 잡음으로 보고 제외(UI용 nms_segments에는 모두 남김)
+NMS_MIN_SEGMENT_SEC = 0.2
 
 PREDICTION_OUTPUT_DIR = ROOT_DIR / "ai_server" / "prediction_outputs"
 PREDICTION_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -318,6 +402,35 @@ def ctc_greedy_decode(
         )
 
     return result
+
+
+def ctc_greedy_spans(
+    log_probs: np.ndarray, idx_to_gloss: dict[int, str], blank_idx: int = 0
+) -> list[dict[str, Any]]:
+    """전체 시퀀스용 greedy CTC. 토큰별 (gloss, 최고 확률, 시작/끝 프레임 인덱스)를 반환한다."""
+    pred_ids = np.argmax(log_probs, axis=-1)
+    spans: list[dict[str, Any]] = []
+    prev: int | None = None
+
+    for t, c in enumerate(pred_ids.tolist()):
+        if c == blank_idx:
+            prev = None
+            continue
+
+        prob = float(np.exp(log_probs[t, c]))
+
+        if c != prev:
+            spans.append(
+                {"gloss": idx_to_gloss.get(int(c), "<UNK>"), "prob": prob, "start": t, "end": t}
+            )
+            prev = c
+        else:
+            span = spans[-1]
+            span["end"] = t
+            if prob > span["prob"]:
+                span["prob"] = prob
+
+    return spans
 
 
 def ctc_beam_search_decode(
@@ -573,6 +686,26 @@ def _sign_worker_main(
         return float(
             np.mean(np.abs(a - b))
         )
+
+    def buffer_has_real_motion(frames: list[np.ndarray]) -> bool:
+        """buffer 구간 전체에 실제 움직임이 있는지 확인한다.
+
+        front_still이나 프레임 단위 motion_score(연속 두 프레임 diff)는
+        still 필드가 오지 않거나(현재 still=None으로 계속 오고 있음) 서버
+        자체 threshold 캘리브레이션이 안 맞으면 무력화된다. 이 검사는 그와
+        무관하게, 지금 디코딩하려는 buffer 구간 자체의 keypoint 분산을
+        직접 봐서 "이 구간에 정말 신호가 있는가"를 판단하는 독립적인
+        안전장치다. 분산이 낮으면(=거의 정지/잡음) 애초에 forward pass도
+        beam도 돌리지 않고 추론 자체를 건너뛴다 — CPU도 아끼고, 정지
+        구간에서 엉뚱한 gloss가 확정되는 것도 원천 차단한다.
+        """
+        if len(frames) < 2:
+            return False
+        arr = np.asarray(frames, dtype=np.float32)
+        # 프레임 간 diff의 표준편차: 손이 실제로 움직이는 구간은 크고,
+        # 정지 상태의 센서 잡음은 작게 나온다.
+        diffs = np.diff(arr, axis=0)
+        return float(np.std(diffs)) >= MIN_BUFFER_MOTION_STD
 
     def forward_log_probs(
         frames: list[np.ndarray],
@@ -898,6 +1031,32 @@ def _sign_worker_main(
             if not should_infer:
                 continue
 
+            # front_still/motion 임계값과 무관한 독립 안전장치: 지금
+            # buffer 구간 자체에 실질적인 움직임이 없으면(=정지/잡음)
+            # 추론을 아예 건너뛴다. 이게 없으면 "정지 상태에서도 계속
+            # 엉뚱한 gloss가 확정되는" 문제가 남는다.
+            has_motion = buffer_has_real_motion(buffer)
+            if infer_counter % 20 == 0:
+                # 캘리브레이션용: MIN_BUFFER_MOTION_STD가 실제 데이터와
+                # 맞는지 확인하려면 이 로그의 std 값 분포를 보고 조정한다.
+                arr_dbg = np.asarray(buffer, dtype=np.float32)
+                std_dbg = float(np.std(np.diff(arr_dbg, axis=0))) if len(buffer) >= 2 else 0.0
+                print(
+                    f"[MOTION] buffer_std={std_dbg:.5f} threshold={MIN_BUFFER_MOTION_STD} "
+                    f"has_motion={has_motion} buffer_len={len(buffer)}",
+                    flush=True,
+                )
+
+            if not has_motion:
+                if ended:
+                    # 진짜 motion 정지인데 buffer 자체에 실질적 신호가
+                    # 없었다는 뜻 — 잡음/정지 구간이었으므로 디코딩 없이
+                    # 그냥 IDLE로 복귀한다. 여기서 force_flush를 부르면
+                    # 잡음을 단어로 오확정할 위험이 있다.
+                    clear_motion_state()
+                # can_commit/timeout 판정 자체가 무의미하므로 건너뛴다.
+                continue
+
             infer_counter += 1
 
             log_probs = forward_log_probs(
@@ -1174,6 +1333,7 @@ class AsyncSignPredictor:
         self,
         keypoints: list[float] | np.ndarray,
         frame_id: int,
+        still: bool | None = None,
     ) -> None:
         if (
             self._process is None
@@ -1191,7 +1351,7 @@ class AsyncSignPredictor:
         except Exception:
             pass
 
-        item = {"frame_id": int(frame_id), "keypoints": kp}
+        item = {"frame_id": int(frame_id), "keypoints": kp, "still": still}
 
         try:
             self._frame_queue.put_nowait(item)
@@ -1353,6 +1513,455 @@ class AsyncSignPredictor:
             OSError,
         ):
             return -1
+
+
+# ============================================================================
+# 6-1. 비수지(NMS) — 모델 / 별도 프로세스 worker / predictor
+#
+# 수지 worker와 완전히 분리된 두 번째 프로세스에서 실행한다. 같은 프로세스에
+# 넣으면 NMS Transformer 추론이 수지 추론 지연에 그대로 더해지기 때문이다.
+# NMS는 보조 기능이므로 로드/추론이 실패해도 수지 인식은 계속 동작해야 한다.
+# ============================================================================
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=4000):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1).float()
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer("pe", pe.unsqueeze(0))
+
+    def forward(self, x):
+        return x + self.pe[:, : x.size(1)]
+
+
+class NMSClassifier(nn.Module):
+    def __init__(self, input_dim, d_model, nhead, num_layers, num_labels, dropout):
+        super().__init__()
+        self.input_proj = nn.Linear(input_dim, d_model)
+        self.pos_encoding = PositionalEncoding(d_model)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=d_model * 4,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.head = nn.Linear(d_model, num_labels)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, src_key_padding_mask=None):
+        x = self.dropout(self.input_proj(x))
+        x = self.pos_encoding(x)
+        x = self.encoder(x, src_key_padding_mask=src_key_padding_mask)
+        return self.head(x)
+
+
+def load_nms_model(device: torch.device) -> NMSClassifier:
+    ckpt = torch.load(NMS_CKPT_PATH, map_location=device, weights_only=False)
+    cfg = ckpt["cfg"]
+    model = NMSClassifier(
+        input_dim=cfg["input_dim"],
+        d_model=cfg["d_model"],
+        nhead=cfg["nhead"],
+        num_layers=cfg["num_layers"],
+        num_labels=len(NMS_KEYS),
+        dropout=0.0,
+    ).to(device)
+    model.load_state_dict(ckpt["model"])
+    model.eval()
+    print(
+        f"[NMS] model loaded: epoch {ckpt.get('epoch')}, "
+        f"macro_F1 {float(ckpt.get('macro_f1', 0.0)):.4f}, device={device}",
+        flush=True,
+    )
+    return model
+
+
+@torch.no_grad()
+def infer_nms(model: NMSClassifier, device: torch.device, feat_window) -> np.ndarray:
+    seq = gaussian_filter1d(np.array(feat_window, dtype=np.float32), sigma=1.0, axis=0)
+    x = torch.from_numpy(seq).unsqueeze(0).to(device)
+    logits = model(x)
+    probs = torch.sigmoid(logits).squeeze(0).cpu().numpy()
+    return probs[-1]
+
+
+def _build_face_landmarks(face_xyz: np.ndarray):
+    """브라우저에서 받은 (468, 3) 배열을 FaceMesh 결과(NormalizedLandmarkList)와
+    같은 인터페이스로 감싼다. extract_nonmanual은 기존 스크립트와 동일한 코드를
+    그대로 쓰므로, 학습 때와 같은 특징 추출 경로가 유지된다."""
+    if _landmark_pb2 is not None:
+        landmark_list = _landmark_pb2.NormalizedLandmarkList()
+        for x, y, z in face_xyz.tolist():
+            landmark_list.landmark.add(x=x, y=y, z=z)
+        return landmark_list
+
+    ns = types.SimpleNamespace
+    return ns(landmark=[ns(x=x, y=y, z=z) for x, y, z in face_xyz.tolist()])
+
+
+def _nms_frame_shape(face_w: Any, face_h: Any) -> tuple[int, int, int]:
+    """기존 스크립트의 resize_like_preprocess(가로 640 고정)와 같은 shape를 만든다.
+    extract_nonmanual이 shape로 종횡비를 반영하므로 원본 비율이 중요하다."""
+    try:
+        w = float(face_w)
+        h = float(face_h)
+        if w > 0 and h > 0:
+            return (int(640 * h / w), 640, 3)
+    except (TypeError, ValueError):
+        pass
+    return (480, 640, 3)
+
+
+def _put_latest(q: Any, item: Any) -> None:
+    try:
+        q.put_nowait(item)
+    except queue.Full:
+        try:
+            q.get_nowait()
+        except Exception:
+            pass
+        try:
+            q.put_nowait(item)
+        except Exception:
+            pass
+
+
+def _nms_worker_main(frame_queue: Any, result_queue: Any, stop_event: Any, cfg: dict[str, Any]) -> None:
+    try:
+        torch.set_num_threads(int(cfg.get("threads", 1)))
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    print("[NMS WORKER] before load_nms_model", flush=True)
+    try:
+        model = load_nms_model(device)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[NMS WORKER] model load failed: {exc!r}", flush=True)
+        try:
+            result_queue.put_nowait(("__failed__", repr(exc)))
+        except Exception:
+            pass
+        return
+
+    try:
+        result_queue.put_nowait(("__ready__",))
+    except Exception:
+        pass
+
+    window = int(cfg["window"])
+    min_frames = int(cfg["min_frames"])
+    stride = int(cfg["stride"])
+    alpha = float(cfg["alpha"])
+
+    feat_buffer: deque = deque(maxlen=window)
+    smooth = np.zeros(len(NMS_KEYS), dtype=np.float32)
+    prev_face = None
+    count = 0
+    reported_feature_error = False
+
+    try:
+        while not stop_event.is_set():
+            try:
+                item = frame_queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            except (EOFError, OSError):
+                break
+
+            if item is None:
+                break
+
+            if len(item) == 1:  # ("__reset__",)
+                feat_buffer.clear()
+                smooth = np.zeros(len(NMS_KEYS), dtype=np.float32)
+                prev_face = None
+                count = 0
+                continue
+
+            frame_id, face_xyz, face_w, face_h = item
+
+            # 이번 프레임에서 얼굴이 안 잡히면 직전 얼굴을 재사용한다(기존 스크립트와 동일).
+            if face_xyz is not None:
+                face_landmarks = _build_face_landmarks(face_xyz)
+                prev_face = face_landmarks
+            else:
+                face_landmarks = prev_face
+
+            if face_landmarks is None:
+                continue
+
+            try:
+                feat = extract_nonmanual(face_landmarks, _nms_frame_shape(face_w, face_h))
+            except Exception as exc:  # noqa: BLE001
+                if not reported_feature_error:
+                    print(f"[NMS WORKER] extract_nonmanual failed: {exc!r}", flush=True)
+                    reported_feature_error = True
+                continue
+
+            feat_buffer.append(feat)
+            count += 1
+
+            if len(feat_buffer) < min_frames or count % stride != 0:
+                continue
+
+            try:
+                probs = infer_nms(model, device, list(feat_buffer))
+            except Exception as exc:  # noqa: BLE001
+                print(f"[NMS WORKER] inference failed: {exc!r}", flush=True)
+                continue
+
+            smooth = alpha * probs + (1 - alpha) * smooth
+            _put_latest(
+                result_queue,
+                {
+                    "frame_id": int(frame_id),
+                    "probs": [round(float(p), 4) for p in probs],
+                    "smoothed": [round(float(p), 4) for p in smooth],
+                },
+            )
+    finally:
+        try:
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+
+class AsyncNmsPredictor:
+    """수지 predictor와 같은 구조의 비수지 predictor. 결과는 항상 최신 1건만 의미가 있다."""
+
+    def __init__(self) -> None:
+        self.cfg = {
+            "threads": max(1, (os.cpu_count() or 4) // 4),
+            "window": NMS_WINDOW_SIZE,
+            "min_frames": NMS_MIN_FRAMES,
+            "stride": NMS_INFER_STRIDE,
+            "alpha": NMS_SMOOTH_ALPHA,
+        }
+        self._frame_queue = mlp.Queue(maxsize=NMS_QUEUE_MAXSIZE)
+        self._result_queue = mlp.Queue(maxsize=8)
+        self._stop_event = mlp.Event()
+        self._process: mlp.Process | None = None
+
+    def start(self) -> None:
+        if self._process is not None and self._process.is_alive():
+            return
+        self._stop_event.clear()
+        self._process = mlp.Process(
+            target=_nms_worker_main,
+            args=(self._frame_queue, self._result_queue, self._stop_event, self.cfg),
+            daemon=True,
+        )
+        self._process.start()
+        print("[NMS] worker started", flush=True)
+
+    def stop(self) -> None:
+        proc = self._process
+        if proc is None:
+            return
+        self._stop_event.set()
+        try:
+            self._frame_queue.put_nowait(None)
+        except Exception:
+            pass
+        proc.join(timeout=5)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=3.0)
+        for q in (self._frame_queue, self._result_queue):
+            try:
+                q.cancel_join_thread()
+                q.close()
+            except Exception:
+                pass
+        self._process = None
+
+    def push(self, frame_id: int, face_flat: list[float], face_w: Any, face_h: Any) -> None:
+        if self._process is None or not self._process.is_alive():
+            return
+        face_xyz = np.asarray(face_flat, dtype=np.float32).reshape(-1, 3)
+        # 가득 차면 가장 오래된 프레임을 버리고 최신으로 따라잡는다(실시간성 우선).
+        _put_latest(self._frame_queue, (int(frame_id), face_xyz, face_w, face_h))
+
+    def poll_latest(self) -> dict[str, Any] | None:
+        latest = None
+        while True:
+            try:
+                item = self._result_queue.get_nowait()
+            except queue.Empty:
+                break
+            except (EOFError, OSError):
+                break
+            if isinstance(item, dict):
+                latest = item
+        return latest
+
+    def reset(self) -> None:
+        while True:
+            try:
+                self._result_queue.get_nowait()
+            except Exception:
+                break
+        try:
+            self._frame_queue.put_nowait(("__reset__",))
+        except Exception:
+            pass
+
+    def wait_ready(self, timeout: float = 60.0) -> bool:
+        import time
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                item = self._result_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            except (EOFError, OSError):
+                return False
+            if item == ("__ready__",):
+                return True
+            if isinstance(item, tuple) and item and item[0] == "__failed__":
+                print(f"[NMS] worker reported failure: {item[1:]}", flush=True)
+                return False
+        return False
+
+
+def _new_nms_timeline() -> dict[str, Any]:
+    return {
+        "first_frame": None,
+        "last_t": 0.0,
+        "open": {key: None for key in NMS_KEYS},
+        "peak": {key: 0.0 for key in NMS_KEYS},
+        "segments": [],
+    }
+
+
+def _update_nms_timeline(state: dict[str, Any], frame_id: int, smoothed: list[float]) -> list[bool]:
+    """smoothed 확률이 키별 임계값을 넘는 구간을 세션 상대 시간(초)으로 기록한다.
+    시간축은 카메라 frame_id 기준이라 전송이 중단된 정지 구간도 실제 시간으로 반영된다.
+    first_frame은 세션 첫 프레임(frame 핸들러에서 설정)이라 단어 시간축과 원점이 같다."""
+    if state["first_frame"] is None:
+        state["first_frame"] = frame_id
+    t = max(0.0, (frame_id - state["first_frame"]) / CAMERA_FPS)
+
+    flags: list[bool] = []
+    for i, key in enumerate(NMS_KEYS):
+        value = float(smoothed[i])
+        active = value >= NMS_KEY_THRESHOLD[key]
+        start = state["open"][key]
+
+        if active:
+            state["peak"][key] = max(state["peak"][key], value)
+            if start is None:
+                state["open"][key] = t
+        elif start is not None:
+            state["segments"].append(
+                {
+                    "key": key,
+                    "start": round(start, 2),
+                    "end": round(t, 2),
+                    "peak": round(state["peak"][key], 2),
+                }
+            )
+            state["open"][key] = None
+            state["peak"][key] = 0.0
+
+        flags.append(bool(active))
+
+    state["last_t"] = t
+    return flags
+
+
+def _close_nms_timeline(state: dict[str, Any]) -> list[dict[str, Any]]:
+    for key in NMS_KEYS:
+        start = state["open"][key]
+        if start is not None:
+            state["segments"].append(
+                {
+                    "key": key,
+                    "start": round(start, 2),
+                    "end": round(state["last_t"], 2),
+                    "peak": round(state["peak"][key], 2),
+                }
+            )
+            state["open"][key] = None
+            state["peak"][key] = 0.0
+    return sorted(state["segments"], key=lambda s: (s["start"], s["key"]))
+
+
+def _recorded_time(idx: int, frame_ids: list[int], origin: int) -> float:
+    """녹화 시퀀스의 프레임 인덱스를 세션 상대 시간(초)으로 바꾼다."""
+    if not frame_ids:
+        return 0.0
+    idx = min(max(int(idx), 0), len(frame_ids) - 1)
+    return max(0.0, (frame_ids[idx] - origin) / CAMERA_FPS)
+
+
+def _nms_label(key: str) -> str:
+    label = NMS_KEY_LABELS.get(key, "")
+    return f"{key}({label})" if label else key
+
+
+def build_nms_context(
+    words_timed: list[dict[str, Any]],
+    segments: list[dict[str, Any]],
+    duration_sec: float,
+) -> dict[str, Any]:
+    """녹화 전체의 비수지 타임라인을 단어 구간에 맞춰 정렬하고 LLM에 넘길 형태로 만든다.
+
+    반환 dict
+      words    : 단어별 {gloss, start, end, nms:[{key,start,end,peak}]}
+      segments : LLM에 전달할 비수지 구간(짧은 잡음 제외)
+      unaligned: 어느 단어와도 겹치지 않은 비수지 구간
+      text     : 프롬프트에 그대로 붙일 수 있는 한국어 블록
+    """
+    segs = [s for s in segments if s["end"] - s["start"] >= NMS_MIN_SEGMENT_SEC]
+    tol = NMS_ALIGN_TOLERANCE_SEC
+
+    aligned_words = [{**w, "nms": []} for w in words_timed]
+    unaligned: list[dict[str, Any]] = []
+
+    for seg in segs:
+        hit = False
+        for w in aligned_words:
+            if seg["end"] > w["start"] - tol and seg["start"] < w["end"] + tol:
+                w["nms"].append(seg)
+                hit = True
+        if not hit:
+            unaligned.append(seg)
+
+    def fmt(seg: dict[str, Any]) -> str:
+        peak = seg.get("peak")
+        strength = f", 강도 {peak:.2f}" if peak is not None else ""
+        return f"{_nms_label(seg['key'])} {seg['start']:.2f}~{seg['end']:.2f}초{strength}"
+
+    lines = [f"[비수지 타임라인] 수어 녹화 전체(총 {duration_sec:.2f}초) 기준"]
+    if not segs:
+        lines.append("감지된 비수지 신호 없음")
+    else:
+        for i, w in enumerate(aligned_words, 1):
+            nms_text = " / ".join(fmt(s) for s in w["nms"]) if w["nms"] else "없음"
+            lines.append(f"{i}. {w['gloss']} ({w['start']:.2f}~{w['end']:.2f}초) 비수지: {nms_text}")
+        if unaligned:
+            lines.append("단어와 겹치지 않는 비수지: " + " / ".join(fmt(s) for s in unaligned))
+
+    return {
+        "duration_sec": round(duration_sec, 2),
+        "words": aligned_words,
+        "segments": segs,
+        "unaligned": unaligned,
+        "text": "\n".join(lines),
+    }
 
 
 # ============================================================================
@@ -1569,6 +2178,56 @@ class InferenceEngine:
 
         return decoded
 
+    def decode_recording(self, raw_features: np.ndarray) -> dict[str, Any]:
+        """녹화해 둔 전체 시퀀스를 한 번에 디코딩한다(녹화 스크립트의 predict_sequence와 같은 방식).
+
+        반환 tokens의 start/end는 입력 시퀀스(raw_features)의 프레임 인덱스다.
+        """
+        if self.model is None:
+            self.load()
+
+        raw = np.asarray(raw_features, dtype=np.float32)
+        if len(raw) < MIN_FRAMES:
+            return {"tokens": [], "confidence": 0.0}
+
+        enhanced = self.build_model_features(raw)
+        tensor = (
+            torch.from_numpy(np.asarray(enhanced, dtype=np.float32)).unsqueeze(0).to(self.device)
+        )
+
+        with torch.no_grad():
+            logits = self.model(tensor)
+            log_probs = F.log_softmax(logits, dim=-1).squeeze(0).cpu().numpy()
+
+        spans = ctc_greedy_spans(log_probs, self.idx_to_gloss, self.blank_idx)
+        if FINAL_REMOVE_UNK:
+            spans = [s for s in spans if s["gloss"] != "<UNK>"]
+
+        # 모델 출력 길이가 입력과 다르면(다운샘플링) 인덱스를 입력 프레임 기준으로 환산한다.
+        scale = len(raw) / max(1, log_probs.shape[0])
+        last = len(raw) - 1
+        tokens = [
+            {
+                "gloss": s["gloss"],
+                "prob": float(s["prob"]),
+                "start": min(last, int(round(s["start"] * scale))),
+                "end": min(last, int(round(s["end"] * scale))),
+            }
+            for s in spans
+        ]
+        confidence = float(np.mean([t["prob"] for t in tokens])) if tokens else 0.0
+
+        print(
+            "[ai] recording decode",
+            {
+                "frames": len(raw),
+                "model_T": int(log_probs.shape[0]),
+                "tokens": [(t["gloss"], round(t["prob"], 2)) for t in tokens],
+            },
+            flush=True,
+        )
+        return {"tokens": tokens, "confidence": confidence}
+
     def _response(
         self,
         words: list[str],
@@ -1596,6 +2255,20 @@ engine = InferenceEngine()
 # 8. LLM
 # ============================================================================
 
+def _translate_gloss_accepts_nms() -> bool:
+    """llm_client.translate_gloss가 nms_context 인자를 받는지 확인한다(구버전이면 비수지는 건너뜀)."""
+    try:
+        params = inspect.signature(translate_gloss).parameters
+    except (TypeError, ValueError):
+        return False
+    return "nms_context" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
+TRANSLATE_ACCEPTS_NMS = _translate_gloss_accepts_nms()
+
+
 async def enrich_with_llm(
     result: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1610,10 +2283,23 @@ async def enrich_with_llm(
         result.get("confidence") or 0
     )
 
+    llm_kwargs: dict[str, Any] = {}
+    nms_context = result.get("nms_context")
+    if nms_context:
+        if TRANSLATE_ACCEPTS_NMS:
+            llm_kwargs["nms_context"] = nms_context
+        else:
+            print(
+                "[ai-llm] translate_gloss가 nms_context를 받지 않아 비수지는 LLM에 전달되지 않습니다 "
+                "(llm_client.py 수정 필요)",
+                flush=True,
+            )
+
     llm_result = await translate_gloss(
         words,
         gloss_result,
         confidence,
+        **llm_kwargs,
     )
 
     enriched = {
@@ -1788,6 +2474,10 @@ def suffix_from_content_type(
 sign_predictor: AsyncSignPredictor | None = None
 sign_predictor_ready = False
 
+# 비수지(NMS) worker도 같은 방식으로 상시 유지한다. 비활성/로드 실패 시 None 또는 not ready.
+nms_predictor: AsyncNmsPredictor | None = None
+nms_predictor_ready = False
+
 
 @app.on_event("startup")
 async def startup() -> None:
@@ -1815,31 +2505,95 @@ async def startup() -> None:
 
     # 스트리밍 worker를 서버 시작 시 1회 띄우고 모델 로드가
     # 끝날 때까지 대기한다. 이후 세션들은 이 worker를 재사용한다.
-    global sign_predictor, sign_predictor_ready
+    global sign_predictor, sign_predictor_ready, nms_predictor, nms_predictor_ready
 
     sign_predictor = AsyncSignPredictor()
     await asyncio.to_thread(sign_predictor.start)
 
+    # 비수지 worker는 수지 worker와 병렬로 로드한다(서로 기다리지 않는다).
+    if NMS_AVAILABLE:
+        nms_predictor = AsyncNmsPredictor()
+        await asyncio.to_thread(nms_predictor.start)
+        asyncio.create_task(_wait_nms_ready_in_background())
+    else:
+        if not NMS_ENABLED:
+            nms_reason = "SIGNLINK_NMS_ENABLED=false"
+        elif not NMS_FEATURES_AVAILABLE:
+            nms_reason = f"nonmanual_features import 실패: {NMS_FEATURES_ERROR}"
+        else:
+            nms_reason = f"체크포인트 없음: {NMS_CKPT_PATH}"
+        print(f"[ai] NMS 비활성화 — {nms_reason}", flush=True)
+
     print("[ai] waiting for sign model to load...", flush=True)
 
+    # Windows spawn 방식은 worker 프로세스를 띄울 때마다 torch/cv2/mediapipe를
+    # 처음부터 다시 import해야 해서(콜드스타트) 30초를 넘기는 경우가 흔하다.
+    # 60초까지는 startup을 블로킹해서 기다리되, 그래도 못 받으면 서버를
+    # 계속 죽은 채로 두지 않고 백그라운드에서 계속 기다리다가 나중에
+    # 로드가 끝나는 순간 자동으로 ready 상태가 되도록 한다. 이게 없으면
+    # 최초 대기가 한 번 타임아웃된 뒤로는, worker가 그 뒤에 실제로 로드를
+    # 마쳐도 그 신호를 읽어줄 코드가 없어 서버 재시작 전까지 영원히
+    # "not ready" 상태에 머무르는 버그가 있었다.
     sign_predictor_ready = await asyncio.to_thread(
         sign_predictor.wait_ready,
-        30.0,
+        60.0,
     )
 
     if sign_predictor_ready:
         print("[ai] sign model ready", flush=True)
     else:
         print(
-            "[ai] sign model did not report ready within timeout; "
-            "streaming predictions may be unavailable until it finishes loading",
+            "[ai] sign model still loading after 60s; will keep waiting in "
+            "the background and become ready automatically once it "
+            "finishes (no restart needed)",
+            flush=True,
+        )
+        asyncio.create_task(_wait_ready_in_background())
+
+
+async def _wait_ready_in_background() -> None:
+    global sign_predictor_ready
+
+    predictor = sign_predictor
+    if predictor is None:
+        return
+
+    ready = await asyncio.to_thread(predictor.wait_ready, 600.0)
+    sign_predictor_ready = ready
+
+    if ready:
+        print("[ai] sign model ready (background wait)", flush=True)
+    else:
+        print(
+            "[ai] sign model failed to report ready within extended "
+            "timeout; check the worker process for errors",
             flush=True,
         )
 
 
+async def _wait_nms_ready_in_background() -> None:
+    global nms_predictor_ready
+
+    predictor = nms_predictor
+    if predictor is None:
+        return
+
+    ready = await asyncio.to_thread(predictor.wait_ready, 600.0)
+    nms_predictor_ready = ready
+    if ready:
+        print("[ai] NMS model ready", flush=True)
+    else:
+        print("[ai] NMS model failed to load; NMS disabled (sign recognition unaffected)", flush=True)
+
+
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global sign_predictor, sign_predictor_ready
+    global sign_predictor, sign_predictor_ready, nms_predictor, nms_predictor_ready
+
+    if nms_predictor is not None:
+        await asyncio.to_thread(nms_predictor.stop)
+        nms_predictor = None
+    nms_predictor_ready = False
 
     if sign_predictor is not None:
         await asyncio.to_thread(sign_predictor.stop)
@@ -1857,6 +2611,8 @@ async def health() -> dict[str, Any]:
         "model_path": str(MODEL_PATH),
         "skip_llm": SKIP_LLM,
         "sign_model_ready": sign_predictor_ready,
+        "nms_enabled": NMS_AVAILABLE,
+        "nms_ready": nms_predictor_ready,
         "llm_model": os.getenv(
             "SIGNLINK_LLM_MODEL",
             "Qwen/Qwen2.5-3B-Instruct",
@@ -1918,6 +2674,11 @@ async def predict_websocket(
     accumulated_words: list[str] = []
     accumulated_confidences: list[float] = []
     accumulated_frame_count = 0
+    nms_timeline = _new_nms_timeline()
+    # 녹화: 세션(start~end) 동안 받은 모든 프레임. end에서 전체를 한 번에 디코딩한다.
+    recorded_frames: list[np.ndarray] = []
+    recorded_frame_ids: list[int] = []
+    recording_truncated = False
 
     try:
         while True:
@@ -1963,6 +2724,13 @@ async def predict_websocket(
 
                 print("[AI WS] predictor reset for new session", flush=True)
 
+                recorded_frames = []
+                recorded_frame_ids = []
+                recording_truncated = False
+                nms_timeline = _new_nms_timeline()
+                if nms_predictor is not None and nms_predictor_ready:
+                    nms_predictor.reset()
+
                 accumulated_words = []
                 accumulated_confidences = []
                 accumulated_frame_count = 0
@@ -1989,6 +2757,11 @@ async def predict_websocket(
                     "keypoints"
                 )
                 frame_id = message.get("frame_id")
+                # 게이트웨이(translate.py/ai_client.py)가 보낸 정지 여부.
+                # 이게 빠져있던 게 "still이 게이트웨이까지는 도달하는데
+                # worker에서는 항상 None으로 보이는" 문제의 실제 원인이었다
+                # — 여기서 안 읽으면 뒤에서 아무리 읽으려 해도 이미 없다.
+                still = message.get("still")
 
                 if not isinstance(
                     keypoints,
@@ -2043,7 +2816,54 @@ async def predict_websocket(
                 predictor.push_frame(
                     keypoints,
                     frame_id,
+                    still,
                 )
+
+                # 녹화: 실시간 단어 표시와 별개로, end에서 전체 디코딩할 수 있게 모든 프레임을 보관한다.
+                if nms_timeline["first_frame"] is None:
+                    nms_timeline["first_frame"] = frame_id  # 단어/비수지 시간축의 공통 원점
+                if len(recorded_frames) < MAX_RECORD_FRAMES:
+                    recorded_frames.append(np.asarray(keypoints, dtype=np.float32))
+                    recorded_frame_ids.append(int(frame_id))
+                elif not recording_truncated:
+                    recording_truncated = True
+                    print(f"[ai] recording buffer full ({MAX_RECORD_FRAMES} frames); later frames are not recorded", flush=True)
+
+                # ------------------------------------------------------
+                # 비수지(NMS): 수지와 독립된 별도 worker로 보낸다.
+                # 어떤 이유로 실패해도 수지 인식 흐름은 절대 막지 않는다.
+                # ------------------------------------------------------
+                if nms_predictor is not None and nms_predictor_ready:
+                    try:
+                        face = message.get("face")
+                        if isinstance(face, list) and len(face) == NMS_FACE_VALUES:
+                            nms_predictor.push(
+                                frame_id,
+                                face,
+                                message.get("face_w"),
+                                message.get("face_h"),
+                            )
+
+                        nms_result = nms_predictor.poll_latest()
+                        if nms_result is not None:
+                            nms_frame_id = int(nms_result.get("frame_id", frame_id))
+                            nms_smoothed = nms_result["smoothed"]
+                            nms_active = _update_nms_timeline(
+                                nms_timeline, nms_frame_id, nms_smoothed
+                            )
+                            await websocket.send_json(
+                                {
+                                    "type": "nms",
+                                    "frame_id": nms_frame_id,
+                                    "probs": nms_result["probs"],
+                                    "smoothed": nms_smoothed,
+                                    "active": nms_active,
+                                }
+                            )
+                    except WebSocketDisconnect:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[AI WS] NMS error (ignored): {exc!r}", flush=True)
 
                 # worker에서 이미 확정된 단어를
                 # non-blocking으로 꺼낸다.
@@ -2190,80 +3010,105 @@ async def predict_websocket(
             if message_type == "end":
                 print(
                     "[ai] stream ended. "
-                    f"accumulated so far: "
-                    f"{accumulated_words}",
+                    f"recorded_frames={len(recorded_frames)} live_words={accumulated_words}",
                     flush=True,
                 )
 
-                if predictor is not None:
-                    # worker가 남은 buffer를 flush.
-                    predictor.flush()
+                nms_active = nms_predictor is not None and nms_predictor_ready
 
-                    # multiprocessing queue에 들어간
-                    # flush command가 처리될 시간을 짧게 양보.
-                    for _ in range(20):
-                        await asyncio.sleep(0.01)
+                # (1) 비수지 worker가 아직 처리 중인 마지막 프레임 결과를 짧게 기다려 반영한다.
+                if nms_active:
+                    for _ in range(10):
+                        await asyncio.sleep(0.02)
+                        try:
+                            tail = nms_predictor.poll_latest()
+                            if tail is not None:
+                                _update_nms_timeline(
+                                    nms_timeline, int(tail.get("frame_id", 0)), tail["smoothed"]
+                                )
+                        except Exception as exc:  # noqa: BLE001
+                            print(f"[ai] NMS tail error (ignored): {exc!r}", flush=True)
+                            break
 
-                        newly_committed = (
-                            predictor.poll_committed()
+                # (2) 녹화해 둔 전체 시퀀스를 한 번에 디코딩해 최종 gloss를 만든다.
+                #     실시간 표시용 스트리밍 결과(accumulated_words)는 중간 미리보기일 뿐이다.
+                tokens: list[dict[str, Any]] = []
+                decode_confidence = 0.0
+                final_source = "recording"
+
+                if len(recorded_frames) >= MIN_FRAMES:
+                    try:
+                        decoded = await asyncio.to_thread(
+                            engine.decode_recording, np.stack(recorded_frames)
+                        )
+                        tokens = decoded["tokens"]
+                        decode_confidence = float(decoded["confidence"])
+                    except Exception as exc:  # noqa: BLE001
+                        # 전체 디코딩이 예외로 실패한 경우에만 실시간 결과로 대체한다.
+                        print(f"[ai] recording decode failed, using live words: {exc!r}", flush=True)
+                        final_source = "stream_fallback"
+
+                origin = nms_timeline["first_frame"]
+                words_timed: list[dict[str, Any]] = []
+                if final_source == "recording" and origin is not None:
+                    for tok in tokens:
+                        words_timed.append(
+                            {
+                                "gloss": tok["gloss"],
+                                "prob": round(tok["prob"], 3),
+                                "start": round(_recorded_time(tok["start"], recorded_frame_ids, origin), 2),
+                                "end": round(
+                                    _recorded_time(tok["end"], recorded_frame_ids, origin) + 1.0 / CAMERA_FPS,
+                                    2,
+                                ),
+                            }
                         )
 
-                        for (
-                            gloss,
-                            confidence,
-                            global_end,
-                        ) in newly_committed:
-                            accumulated_words.append(
-                                gloss
-                            )
-
-                            accumulated_confidences.append(
-                                float(confidence)
-                            )
-
-                            accumulated_frame_count = max(
-                                accumulated_frame_count,
-                                int(global_end),
-                            )
-
-                        if (
-                            not newly_committed
-                        ):
-                            # 한 번 더 polling
-                            await asyncio.sleep(
-                                0.01
-                            )
-
-                avg_confidence = (
-                    sum(
-                        accumulated_confidences
+                if final_source == "recording":
+                    final_words = [w["gloss"] for w in words_timed]
+                    final_confidence = decode_confidence
+                else:
+                    final_words = list(accumulated_words)
+                    final_confidence = (
+                        sum(accumulated_confidences) / len(accumulated_confidences)
+                        if accumulated_confidences
+                        else 0.0
                     )
-                    / len(
-                        accumulated_confidences
-                    )
-                    if accumulated_confidences
-                    else 0.0
-                )
+
+                # (3) 녹화 전체의 비수지 타임라인을 단어에 맞춰 정렬해 LLM 입력으로 만든다.
+                nms_segments = _close_nms_timeline(nms_timeline) if nms_active else []
+                nms_context = None
+                if nms_active and final_source == "recording" and words_timed:
+                    duration = _recorded_time(len(recorded_frame_ids) - 1, recorded_frame_ids, origin)
+                    nms_context = build_nms_context(words_timed, nms_segments, duration)
+                    print("[ai] NMS -> LLM context:\n" + nms_context["text"], flush=True)
 
                 result = engine._response(
-                    accumulated_words,
-                    frame_count=(
-                        accumulated_frame_count
-                    ),
-                    confidence=avg_confidence,
+                    final_words,
+                    frame_count=len(recorded_frames),
+                    confidence=final_confidence,
                 )
 
                 result["type"] = "translation"
+                result["final_source"] = final_source
+                result["live_words"] = list(accumulated_words)
+                result["words_timed"] = [
+                    {"gloss": w["gloss"], "start": w["start"], "end": w["end"]} for w in words_timed
+                ]
+                result["nms_segments"] = nms_segments
+                if recording_truncated:
+                    result["recording_truncated"] = True
+                if nms_context is not None:
+                    result["nms_context"] = nms_context
 
-                result = (
-                    await maybe_enrich_with_llm(
-                        result
-                    )
-                )
+                result = await maybe_enrich_with_llm(result)
 
-                await websocket.send_json(
-                    result
-                )
+                # LLM 입력용 구조체는 클라이언트로 보낼 필요가 없다(프롬프트 블록만 남김).
+                ctx = result.pop("nms_context", None)
+                if ctx is not None:
+                    result["nms_prompt"] = ctx["text"]
+
+                await websocket.send_json(result)
 
                 # 상시 worker는 죽이지 않는다. buffer/motion 상태만
                 # 정리해 다음 세션이 깨끗하게 시작하도록 한다.
@@ -2274,6 +3119,13 @@ async def predict_websocket(
                 accumulated_words = []
                 accumulated_confidences = []
                 accumulated_frame_count = 0
+
+                nms_timeline = _new_nms_timeline()
+                recorded_frames = []
+                recorded_frame_ids = []
+                recording_truncated = False
+                if nms_predictor is not None and nms_predictor_ready:
+                    nms_predictor.reset()
 
                 continue
 
@@ -2402,6 +3254,8 @@ async def predict_websocket(
         # buffer/motion 상태만 정리해 다음 연결이 깨끗하게 시작하게 한다.
         if predictor is not None:
             predictor.reset()
+        if nms_predictor is not None and nms_predictor_ready:
+            nms_predictor.reset()
 
 
 # ============================================================================
