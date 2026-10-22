@@ -8,6 +8,8 @@ import { HistoryView } from './components/HistoryView'
 import { InstructionsModal } from './components/InstructionsModal'
 import { LoginView } from './components/LoginView'
 import { TranslationResult } from './components/TranslationResult'
+import { NmsPanel } from './components/NmsPanel'
+import { FaceFrame, NmsFrame, NmsSegment } from './nms'
 import { ApiSession, ApiTranslation, TranslationCandidate, TranslationLog, UserState, ViewState } from './types'
 
 const emptyUser: UserState = {
@@ -62,9 +64,11 @@ export default function App() {
   const [isHelpOpen, setIsHelpOpen] = useState(false)
   const [isPredicting, setIsPredicting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [nmsFrame, setNmsFrame] = useState<NmsFrame | null>(null)
+  const [nmsSegments, setNmsSegments] = useState<NmsSegment[]>([])
   const wsRef = useRef<WebSocket | null>(null)
   const activeSessionRef = useRef<ApiSession | null>(null)
-
+  const pendingStreamStartRef = useRef<((ok: boolean) => void) | null>(null)
   useEffect(() => {
     async function loadMe() {
       if (!api.getToken()) return
@@ -153,196 +157,188 @@ export default function App() {
     [saveTranslationIfNeeded],
   )
 
-  const openTranslationSocket = useCallback(async () => {
-    if (!user.isLoggedIn || user.role !== 'doctor') {
-      setCurrentView('login')
-      setError('AI 예측을 사용하려면 의료진 계정으로 로그인해야 합니다.')
-      return false
-    }
-
-    const token = api.getToken()
-    if (!token) {
-      setCurrentView('login')
-      return false
-    }
-
-    const activeSession = await ensureSession()
-    wsRef.current?.close()
-
-    const socket = new WebSocket(`${WS_BASE}/ws/translate?token=${encodeURIComponent(token)}`)
-    wsRef.current = socket
-
-    return await new Promise<boolean>((resolve) => {
-      let resolved = false
-      const timeout = window.setTimeout(() => {
-        if (!resolved) {
-          resolved = true
-          setError('백엔드 WebSocket 연결 시간이 초과되었습니다.')
-          socket.close()
-          resolve(false)
-        }
-      }, 8000)
-
-      socket.onopen = () => {
-        socket.send(JSON.stringify({ type: 'start', session_id: activeSession.id }))
+  const ensureTranslationSocket = useCallback(async (): Promise<WebSocket | null> => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        return wsRef.current
       }
-
-      socket.onerror = () => {
-        if (!resolved) {
-          resolved = true
-          window.clearTimeout(timeout)
-          setError('백엔드 WebSocket에 연결할 수 없습니다.')
-          resolve(false)
-        }
+ 
+      if (!user.isLoggedIn || user.role !== 'doctor') {
+        setCurrentView('login')
+        setError('AI 예측을 사용하려면 의료진 계정으로 로그인해야 합니다.')
+        return null
       }
-
+ 
+      const token = api.getToken()
+      if (!token) {
+        setCurrentView('login')
+        return null
+      }
+ 
+      wsRef.current?.close()
+ 
+      const socket = new WebSocket(`${WS_BASE}/ws/translate?token=${encodeURIComponent(token)}`)
+      wsRef.current = socket
+ 
+      // 소켓 생명주기 동안 딱 한 번만 붙는 영구 핸들러.
+      // 문장이 몇 번을 반복되든 이 핸들러 하나로 계속 처리한다.
       socket.onmessage = (event) => {
-        let message: Record<string, unknown>
-
-        try {
-          message = JSON.parse(event.data) as Record<string, unknown>
-        } catch {
-          setError('WebSocket에서 올바르지 않은 응답을 받았습니다.')
-          return
-        }
-
+        const message = JSON.parse(event.data)
+ 
         if (message.type === 'error') {
-          setError(
-            typeof message.message === 'string'
-              ? message.message
-              : 'WebSocket 처리 중 오류가 발생했습니다.',
-          )
+          setError(message.message || 'WebSocket 처리 중 오류가 발생했습니다.')
           setIsPredicting(false)
-          if (!resolved) {
-            resolved = true
-            window.clearTimeout(timeout)
-            resolve(false)
+          if (pendingStreamStartRef.current) {
+            pendingStreamStartRef.current(false)
+            pendingStreamStartRef.current = null
           }
-          socket.close()
           return
         }
-
+ 
         if (message.type === 'stream_started') {
           setError(null)
-          if (!resolved) {
-            resolved = true
-            window.clearTimeout(timeout)
-            resolve(true)
+          if (pendingStreamStartRef.current) {
+            pendingStreamStartRef.current(true)
+            pendingStreamStartRef.current = null
           }
           return
         }
+ 
+        // 비수지(NMS) 실시간 결과: 8개 키의 smoothed 확률과 임계값 초과 여부
+        if (message.type === 'nms') {
+          setNmsFrame({
+            frameId: Number(message.frame_id ?? 0),
+            probs: Array.isArray(message.probs) ? message.probs : [],
+            smoothed: Array.isArray(message.smoothed) ? message.smoothed : [],
+            active: Array.isArray(message.active) ? message.active : [],
+          })
+          return
+        }
 
+        // word_boundary 응답: 아직 문장이 끝난 게 아니라 단어 하나가 막 인식된 상태.
+        // (백엔드가 이 타입을 안 보내면 이 블록은 그냥 안 타므로 무해함)
         if (message.type === 'partial') {
-          const words = Array.isArray(message.words)
-            ? message.words.filter((word): word is string => typeof word === 'string')
-            : []
-          const glossResult =
-            typeof message.gloss_result === 'string'
-              ? message.gloss_result
-              : words.join(' ')
-
-          if (glossResult) {
-            setActiveTranslation(glossResult)
-            setActiveGlossResult(glossResult)
-            setTranslationCandidates([])
-          }
+          const words = Array.isArray(message.words) ? message.words : []
+          setActiveGlossResult(words.join(' '))
           return
         }
-
+ 
         if (message.type === 'translation') {
-          const words = Array.isArray(message.words)
-            ? message.words.filter((word): word is string => typeof word === 'string')
-            : []
+          const words = Array.isArray(message.words) ? message.words : []
           const candidates = Array.isArray(message.translation_candidates)
             ? (message.translation_candidates as TranslationCandidate[])
             : []
-          const glossResult =
-            typeof message.gloss_result === 'string'
-              ? message.gloss_result
-              : words.join(' ')
-          const text =
-            typeof message.text === 'string' && message.text
-              ? message.text
-              : glossResult || '인식된 수어가 없습니다.'
+          const glossResult = message.gloss_result || words.join(' ')
+          const text = message.text || glossResult || '인식된 수어가 없습니다.'
           const confidence = Number(message.confidence ?? 0)
-
+ 
           setActiveTranslation(text)
           setActiveGlossResult(glossResult)
           setTranslationCandidates(candidates)
           setActiveConfidence(confidence)
           setIsPredicting(false)
-
+          setNmsSegments(Array.isArray(message.nms_segments) ? (message.nms_segments as NmsSegment[]) : [])
+ 
           if (message.log_id) {
             setLastLogId(Number(message.log_id))
             loadLogs().catch((err) => setError(err.message))
           }
-
-          socket.close(1000, 'translation complete')
         }
       }
-
-      socket.onclose = (event) => {
-        if (wsRef.current !== socket) return
-
-        wsRef.current = null
-        setIsPredicting(false)
-
-        if (!resolved) {
-          resolved = true
+ 
+      socket.onclose = () => {
+        if (wsRef.current === socket) {
+          wsRef.current = null
+        }
+        if (pendingStreamStartRef.current) {
+          pendingStreamStartRef.current(false)
+          pendingStreamStartRef.current = null
+        }
+      }
+ 
+      return await new Promise<WebSocket | null>((resolve) => {
+        const timeout = window.setTimeout(() => {
+          setError('백엔드 WebSocket 연결 시간이 초과되었습니다.')
+          resolve(null)
+        }, 8000)
+ 
+        socket.onopen = () => {
           window.clearTimeout(timeout)
-          setError('번역 WebSocket 연결이 시작되기 전에 종료되었습니다.')
+          // 최초 접속 시 백엔드가 보내는 {"type": "connected"} 메시지는
+          // 위 onmessage에서 별도 처리 없이 그냥 무시됨 (해가 없음).
+          resolve(socket)
+        }
+ 
+        socket.onerror = () => {
+          window.clearTimeout(timeout)
+          setError('백엔드 WebSocket에 연결할 수 없습니다.')
+          resolve(null)
+        }
+      })
+    }, [loadLogs, user.isLoggedIn, user.role])
+ 
+    // 소켓은 이미 열려 있다는 전제 하에, 이번 문장을 시작한다(session_id 확보 + "start" 전송
+    // + "stream_started" 응답 대기). 소켓 자체를 새로 만들지 않으므로 여러 문장에 걸쳐 재사용 가능.
+    const startStream = useCallback(async (): Promise<boolean> => {
+      const socket = await ensureTranslationSocket()
+      const activeSession = await ensureSession()
+      if (!socket) return false
+      activeSessionRef.current = activeSession
+ 
+      return await new Promise<boolean>((resolve) => {
+        const timeout = window.setTimeout(() => {
+          pendingStreamStartRef.current = null
+          setError('세션 시작 응답 시간이 초과되었습니다.')
           resolve(false)
-          return
+        }, 8000)
+ 
+        pendingStreamStartRef.current = (ok: boolean) => {
+          window.clearTimeout(timeout)
+          resolve(ok)
         }
-
-        if (event.code !== 1000 && event.code !== 1005) {
-          setError('번역 WebSocket 연결이 예기치 않게 종료되었습니다.')
-        }
-      }
-    })
-  }, [ensureSession, loadLogs, user.isLoggedIn, user.role])
-
+ 
+        socket.send(JSON.stringify({ type: 'start', session_id: activeSession.id }))
+      })
+    }, [ensureSession, ensureTranslationSocket])
   const handleStreamStart = async () => {
     setIsPredicting(false)
-    return await openTranslationSocket()
+    setNmsFrame(null)
+    setNmsSegments([])
+    return await startStream()
   }
 
-  const handleKeypointFrame = async (keypoints: number[], frameId: number) => {
-    const socket = wsRef.current
-    const activeSession = activeSessionRef.current
-    if (!socket || socket.readyState !== WebSocket.OPEN || !activeSession) {
-      throw new Error('번역 WebSocket이 연결되어 있지 않습니다.')
+  const handleKeypointFrame = async (
+    keypoints: number[],
+    frameId: number,
+    still: boolean,
+    face?: FaceFrame | null,
+  ) => {
+      const socket = wsRef.current
+      const activeSession = activeSessionRef.current
+      if (!socket || socket.readyState !== WebSocket.OPEN || !activeSession) return
+      socket.send(
+        JSON.stringify({
+          type: 'frame',
+          session_id: activeSession.id,
+          frame_id: frameId,
+          keypoints,
+          still,
+          // 비수지(NMS)용 얼굴 랜드마크. 없으면 필드 자체를 보내지 않는다.
+          ...(face ? { face: face.landmarks, face_w: face.width, face_h: face.height } : {}),
+        }),
+      )
     }
-    socket.send(
-      JSON.stringify({
-        type: 'frame',
-        session_id: activeSession.id,
-        frame_id: frameId,
-        keypoints,
-      }),
-    )
-  }
 
   const handleWordBoundary = async () => {
-    const socket = wsRef.current
-    const activeSession = activeSessionRef.current
-    if (!socket || socket.readyState !== WebSocket.OPEN || !activeSession) {
-      throw new Error('번역 WebSocket이 연결되어 있지 않습니다.')
+      const socket = wsRef.current
+      const activeSession = activeSessionRef.current
+      if (!socket || socket.readyState !== WebSocket.OPEN || !activeSession) return
+      socket.send(JSON.stringify({ type: 'word_boundary', session_id: activeSession.id }))
     }
-    socket.send(
-      JSON.stringify({
-        type: 'word_boundary',
-        session_id: activeSession.id,
-      }),
-    )
-  }
 
   const handleStreamEnd = async () => {
     const socket = wsRef.current
     const activeSession = activeSessionRef.current
-    if (!socket || socket.readyState !== WebSocket.OPEN || !activeSession) {
-      throw new Error('번역 WebSocket이 연결되어 있지 않습니다.')
-    }
+    if (!socket || socket.readyState !== WebSocket.OPEN || !activeSession) return
     setIsPredicting(true)
     socket.send(JSON.stringify({ type: 'end', session_id: activeSession.id, auto_save: autoSave }))
   }
@@ -455,7 +451,7 @@ export default function App() {
         onLogoClick={() => setCurrentView('main')}
       />
 
-      <main className="flex-1 w-full flex items-center justify-center p-4 sm:p-6 md:p-8">
+      <main className="flex-1 w-full flex justify-center p-4 sm:p-6 md:p-8">
         <div className="w-full max-w-7xl">
           {error && (
             <div className="max-w-3xl mx-auto mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">
@@ -477,7 +473,17 @@ export default function App() {
                   <CameraView
                     isActive={cameraActive}
                     onToggleActive={() => {
-                      setCameraActive((active) => !active)
+                      setCameraActive((active) => {
+                        const next = !active
+                        if (!next){
+                          // 카메라를 끄는 순간에만 /ws/translate 연결도 정리한다.
+                          // (카메라 켜져있는 동안에는 문장이 몇 번 반복되든 소켓을 계속 재사용함)
+                          wsRef.current?.close()
+                          wsRef.current = null
+                          activeSessionRef.current = null
+                        }
+                        return next
+                      })
                       setActiveTranslation(null)
                       setActiveGlossResult('')
                       setTranslationCandidates([])
@@ -489,6 +495,8 @@ export default function App() {
                     onStreamEnd={handleStreamEnd}
                     isPredicting={isPredicting}
                   />
+
+                  <NmsPanel frame={nmsFrame} segments={nmsSegments} visible={cameraActive} />
 
                   <TranslationResult
                     text={activeTranslation}

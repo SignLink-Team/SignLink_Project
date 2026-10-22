@@ -7,6 +7,7 @@ import {
   Pause,
   Play,
   Sparkles,
+  Square,
   Upload,
   VideoOff,
   Wand2,
@@ -16,13 +17,19 @@ import {
 import { GESTURE_PRESETS } from '../data'
 import { BrowserKeypointExtractor } from '../keypointExtractor'
 import { GesturePreset } from '../types'
+import { FaceFrame } from '../nms'
 
 interface CameraViewProps {
   isActive: boolean
   onToggleActive: () => void
   onTriggerTranslation: (text: string, category: string) => void
   onStreamStart: () => Promise<boolean>
-  onKeypointFrame: (keypoints: number[], frameId: number) => Promise<void>
+  onKeypointFrame: (
+    keypoints: number[],
+    frameId: number,
+    still: boolean,
+    face?: FaceFrame | null,
+  ) => Promise<void>
   onWordBoundary: () => Promise<void>
   onStreamEnd: () => Promise<void>
   isPredicting?: boolean
@@ -45,6 +52,20 @@ const MOTION_START_FRAMES = 3
 const WORD_END_FRAMES = 8
 const SENTENCE_END_FRAMES = 30
 const POST_END_COOLDOWN_FRAMES = 8
+
+// 수어 종료 방식
+//  true : 모션이 완전히 멈춰도 문장을 끝내지 않는다. 사용자가 "수어 종료" 버튼을 눌렀을 때만
+//         스트림을 종료하고 녹화 전체를 번역한다.
+//         (정지 중 프레임 전송 중단과 단어 경계 전송은 기존 그대로 유지한다)
+//  false: 기존처럼 SENTENCE_END_FRAMES만큼 정지하면 자동 종료한다.
+const MANUAL_STOP_MODE = true
+// 수동 모드에서 버튼을 잊고 방치했을 때의 안전장치. 이 프레임 수만큼 계속 정지하면 자동 종료한다
+// (30fps 기준 30초). 0이면 안전장치를 끄고 오직 버튼으로만 종료한다.
+const IDLE_SAFETY_END_FRAMES = 900
+// 한 세션에서 보낸 프레임이 이 수에 도달하면 자동 종료한다. 서버의 MAX_RECORD_FRAMES(5400)와 같은 값.
+const MAX_MANUAL_RECORD_FRAMES = 5400
+// 버튼을 누르러 손을 뻗는 동작이 새 수어 세션으로 오인되지 않게 하는 쿨다운(30fps 기준 1.5초)
+const MANUAL_STOP_COOLDOWN_FRAMES = 45
 
 function computeMotionScore(
   prev: number[] | null,
@@ -78,6 +99,9 @@ export const CameraView: React.FC<CameraViewProps> = ({
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const extractorRef = useRef<BrowserKeypointExtractor | null>(null)
+  // 비수지(NMS)용: 직전에 추출한 프레임의 얼굴 랜드마크
+  const lastFaceRef = useRef<FaceFrame | null>(null)
+  const faceWarnedRef = useRef(false)
   const loopRef = useRef<number | null>(null)
   const lastFrameAtRef = useRef(0)
   const isSendingFrameRef = useRef(false)
@@ -208,6 +232,45 @@ export const CameraView: React.FC<CameraViewProps> = ({
   }
 
   // ------------------------------------------------------------
+  // 사용자가 "수어 종료" 버튼으로 녹화를 끝낸다.
+  //
+  // 자동 종료(정지 감지)와 같은 정리를 하되, 상태 플래그를 onStreamEnd()보다
+  // 먼저 내려서 이후 프레임이 종료된 세션으로 전송되지 않게 하고,
+  // 버튼 쪽으로 손을 뻗는 동작이 새 세션 시작으로 오인되지 않게 쿨다운을 건다.
+  // ------------------------------------------------------------
+  const handleManualStop = async () => {
+    if (
+      streamEndingRef.current ||
+      streamStartingRef.current ||
+      !motionActiveRef.current
+    ) {
+      return
+    }
+
+    streamEndingRef.current = true
+    motionActiveRef.current = false
+    startCountRef.current = 0
+    endCountRef.current = 0
+    wordBoundarySentRef.current = false
+    cooldownRef.current = MANUAL_STOP_COOLDOWN_FRAMES
+
+    setCameraCaptureStatus('idle')
+    setSentFramesDisplay(sentFramesRef.current)
+
+    console.log('[CAMERA] manual stop - close stream', {
+      sentFrames: sentFramesRef.current,
+    })
+
+    try {
+      await onStreamEnd()
+    } catch (error) {
+      console.error('[CAMERA] manual stop error:', error)
+    } finally {
+      streamEndingRef.current = false
+    }
+  }
+
+  // ------------------------------------------------------------
   // 카메라 종료
   // ------------------------------------------------------------
   const handleCameraOff = async () => {
@@ -277,7 +340,31 @@ export const CameraView: React.FC<CameraViewProps> = ({
 
       const extractor = await ensureExtractor()
 
-      return await extractor.extract(video)
+      const keypoints = await extractor.extract(video)
+
+      // 비수지(NMS)용 얼굴 랜드마크(얼굴 미검출이면 null).
+      // NMS는 보조 기능이므로 여기서 어떤 문제가 생겨도 수지 keypoint 추출/전송은
+      // 절대 막지 않는다(extractor가 구버전이어도 예외 없이 NMS만 꺼진다).
+      let landmarks: number[] | null = null
+      try {
+        if (typeof extractor.getLastFaceLandmarks === 'function') {
+          landmarks = extractor.getLastFaceLandmarks()
+        } else if (!faceWarnedRef.current) {
+          faceWarnedRef.current = true
+          console.warn(
+            '[CAMERA] extractor에 getLastFaceLandmarks가 없습니다 — 비수지(NMS) 비활성. ' +
+              'keypointExtractor.ts가 최신인지, 페이지를 강력 새로고침(Ctrl+Shift+R)했는지 확인하세요.',
+          )
+        }
+      } catch (err) {
+        console.warn('[CAMERA] 얼굴 랜드마크 읽기 실패(NMS만 건너뜀):', err)
+      }
+
+      lastFaceRef.current = landmarks
+        ? { landmarks, width: video.videoWidth, height: video.videoHeight }
+        : null
+
+      return keypoints
     }
 
   // ------------------------------------------------------------
@@ -370,6 +457,9 @@ export const CameraView: React.FC<CameraViewProps> = ({
           try {
             const keypoints =
               await extractCurrentVideoKeypoints()
+
+            // 이번 프레임의 얼굴(이후 await 동안 다음 프레임으로 덮이지 않도록 지역 상수로 고정)
+            const face = lastFaceRef.current
 
             if (keypoints) {
               // 실제 카메라 프레임 번호.
@@ -504,6 +594,8 @@ export const CameraView: React.FC<CameraViewProps> = ({
                       await onKeypointFrame(
                         keypoints,
                         cameraFrameId,
+                        false,
+                        face,
                       )
 
                       sentFramesRef.current += 1
@@ -545,6 +637,8 @@ export const CameraView: React.FC<CameraViewProps> = ({
                     await onKeypointFrame(
                       keypoints,
                       cameraFrameId,
+                      isStill,
+                      face,
                     )
 
                     sentFramesRef.current += 1
@@ -614,8 +708,14 @@ export const CameraView: React.FC<CameraViewProps> = ({
                   // WebSocket 연결만 유지한다.
                   // --------------------------------------------
                   if (
-                    endCountRef.current >=
-                    SENTENCE_END_FRAMES
+                    MANUAL_STOP_MODE
+                      ? (IDLE_SAFETY_END_FRAMES > 0 &&
+                          endCountRef.current >=
+                            IDLE_SAFETY_END_FRAMES) ||
+                        sentFramesRef.current >=
+                          MAX_MANUAL_RECORD_FRAMES
+                      : endCountRef.current >=
+                        SENTENCE_END_FRAMES
                   ) {
                     motionActiveRef.current = false
 
@@ -980,17 +1080,6 @@ export const CameraView: React.FC<CameraViewProps> = ({
         />
 
         {/* -------------------------------------------------- */}
-        {/* 카메라 Canvas */}
-        {/* -------------------------------------------------- */}
-        {isActive &&
-          inputMode === 'camera' && (
-            <canvas
-              ref={canvasRef}
-              className="absolute inset-0 w-full h-full z-10"
-            />
-          )}
-
-        {/* -------------------------------------------------- */}
         {/* 카메라 시작 화면 */}
         {/* -------------------------------------------------- */}
         {!isActive &&
@@ -1032,8 +1121,12 @@ export const CameraView: React.FC<CameraViewProps> = ({
                   <span className="text-xs font-bold text-white">
                     {cameraCaptureStatus ===
                     'recording'
-                      ? 'LIVE 30fps 인식 중'
-                      : '수어 감지 대기 중'}
+                      ? MANUAL_STOP_MODE
+                        ? '인식 중 · 끝나면 종료 버튼'
+                        : 'LIVE 30fps 인식 중'
+                      : isPredicting
+                        ? '번역 중...'
+                        : '수어 감지 대기 중'}
                   </span>
                 </div>
 
@@ -1055,6 +1148,25 @@ export const CameraView: React.FC<CameraViewProps> = ({
                     {cameraError}
                   </div>
                 </div>
+              )}
+
+              {/* ---------------------------------------------- */}
+              {/* 수어 종료 버튼: 녹화 중에만 표시. 누르면 녹화 전체를 번역한다 */}
+              {/* ---------------------------------------------- */}
+              {cameraCaptureStatus === 'recording' && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    void handleManualStop()
+                  }}
+                  className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-red-500 hover:bg-red-600 px-5 py-2 rounded-full border border-white/30 text-white shadow-lg transition-colors cursor-pointer"
+                >
+                  <Square className="w-4 h-4 fill-current" />
+
+                  <span className="text-sm font-bold">수어 종료</span>
+                </button>
               )}
 
               {/* ---------------------------------------------- */}
