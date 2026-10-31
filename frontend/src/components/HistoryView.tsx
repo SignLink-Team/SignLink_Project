@@ -247,27 +247,6 @@ export const HistoryView = ({
             className="w-full pl-9 pr-4 py-2 bg-neutral-50 hover:bg-neutral-100/60 focus:bg-white border border-neutral-200 focus:border-primary rounded-lg text-sm font-medium outline-none transition-all duration-200 font-hyper text-on-surface"
           />
         </div>
-
-        <div className="flex flex-wrap gap-1.5 mt-3 items-center">
-          <span className="text-xs font-extrabold text-neutral-400 mr-1.5 flex items-center gap-0.5 uppercase tracking-wide">
-            <Filter className="w-2.5 h-2.5" />
-            분류 필터:
-          </span>
-          {categories.map((cat) => {
-            const isSelected = selectedCategory === cat
-            return (
-              <button
-                key={cat}
-                onClick={() => setSelectedCategory(cat)}
-                className={`px-3 py-1 rounded-full text-xs sm:text-sm font-bold leading-none border transition-all duration-200 ${
-                  isSelected ? 'bg-primary text-white border-primary shadow-xs' : 'bg-neutral-50 hover:bg-neutral-100 text-neutral-500 border-neutral-200'
-                }`}
-              >
-                {cat}
-              </button>
-            )
-          })}
-        </div>
       </div>
 
       <div className="space-y-2.5">
