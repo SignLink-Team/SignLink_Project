@@ -1,12 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { AnimatePresence, motion } from 'motion/react'
 import {
   Camera,
   Film,
   Hand,
   Pause,
   Play,
-  Sparkles,
   Square,
   Upload,
   VideoOff,
@@ -37,12 +35,34 @@ interface CameraViewProps {
 
 type InputMode = 'camera' | 'video'
 type CameraCaptureStatus = 'idle' | 'recording'
+type MotionCalibrationStatus =
+  | 'preparing'
+  | 'calibrating'
+  | 'unstable'
+  | 'ready'
 
 const CAMERA_EXTRACTION_FPS = 30
 const CAMERA_FRAME_INTERVAL_MS = 1000 / CAMERA_EXTRACTION_FPS
 const UPLOAD_EXTRACTION_FPS = 30
 
+// 최소 샘플 수와 실제 경과 시간을 모두 만족한 뒤 보정을 완료한다.
+// 프레임 속도가 빨라도 안내를 읽고 정지할 시간을 확보한다.
 const CALIBRATION_FRAMES = 20
+const CALIBRATION_MIN_DURATION_MS = 2000
+// keypointExtractor의 포즈 블록: 33개 랜드마크 × 3개 좌표.
+// 이 블록이 전부 0이면 사람이 검출되지 않은 프레임이다.
+const POSE_KEYPOINT_VALUES = 99
+// 손 데이터는 손당 78개
+// 21개 랜드마크 × xyz(63개) + 관절각(15개)
+const HAND_KEYPOINT_VALUES = 78
+const HAND_COORDINATE_VALUES = 21 * 3
+const KEYPOINT_VECTOR_LENGTH = 261
+
+const LEFT_HAND_START = 99
+const RIGHT_HAND_START = LEFT_HAND_START + HAND_KEYPOINT_VALUES
+// 추정 초기값. 실제 카메라/추출기에서 측정한 정지 잡음에 맞춰 조정한다.
+// baseline(기존 20백분위값)이 이 값을 초과하면 보정을 완료하지 않는다.
+const MAX_CALIBRATION_BASELINE = 0.02
 const START_THRESHOLD_MULTIPLIER = 6
 const END_THRESHOLD_MULTIPLIER = 2.5
 const MIN_START_THRESHOLD = 0.0015
@@ -84,6 +104,41 @@ function computeMotionScore(
   return sum / curr.length
 }
 
+/**
+ * 손 랜드마크 검출 여부 확인
+ *
+ * keypointExtractor.ts에서 손이 검출되지 않으면
+ * 해당 손의 78개 데이터가 모두 0으로 반환된다.
+ *
+ * 좌표 63개를 검사하여 손 검출 여부를 판단한다.
+ */
+function hasDetectedHand(
+  keypoints: number[],
+  startIndex: number,
+): boolean {
+  const coordinates = keypoints.slice(
+    startIndex,
+    startIndex + HAND_COORDINATE_VALUES,
+  )
+
+  if (coordinates.length !== HAND_COORDINATE_VALUES) {
+    return false
+  }
+
+  return coordinates.some(
+    (value) => Math.abs(value) > 1e-6,
+  )
+}
+
+/**
+ * 왼손 또는 오른손 중 하나라도 검출되었는지 확인
+ */
+function hasDetectedAnyHand(keypoints: number[]): boolean {
+  return (
+    hasDetectedHand(keypoints, LEFT_HAND_START) ||
+    hasDetectedHand(keypoints, RIGHT_HAND_START)
+  )
+}
 export const CameraView: React.FC<CameraViewProps> = ({
   isActive,
   onToggleActive,
@@ -103,6 +158,8 @@ export const CameraView: React.FC<CameraViewProps> = ({
   const lastFaceRef = useRef<FaceFrame | null>(null)
   const faceWarnedRef = useRef(false)
   const loopRef = useRef<number | null>(null)
+  // 카메라를 끈 뒤 늦게 끝난 비동기 작업이 안내를 다시 띄우지 않도록 한다.
+  const watchLoopRunRef = useRef(0)
   const lastFrameAtRef = useRef(0)
   const isSendingFrameRef = useRef(false)
 
@@ -123,6 +180,10 @@ export const CameraView: React.FC<CameraViewProps> = ({
 
   // ---- 자동 캘리브레이션 상태 ----
   const calibrationSamplesRef = useRef<number[]>([])
+  const calibrationStartedAtRef = useRef<number | null>(null)
+  // RAF 루프는 시작 시점의 state를 캡처하므로 실패 여부는 Ref로도 유지한다.
+  // 실패 후에는 사용자가 다시 보정을 누르기 전까지 샘플을 수집하지 않는다.
+  const calibrationFailedRef = useRef(false)
   const motionStartThresholdRef = useRef(MIN_START_THRESHOLD)
   const motionEndThresholdRef = useRef(MIN_END_THRESHOLD)
   const isCalibratedRef = useRef(false)
@@ -134,6 +195,9 @@ export const CameraView: React.FC<CameraViewProps> = ({
 
   const [inputMode, setInputMode] = useState<InputMode>('camera')
   const [cameraError, setCameraError] = useState<string | null>(null)
+  const [calibrationStatus, setCalibrationStatus] =
+    useState<MotionCalibrationStatus>('preparing')
+  const [calibrationProgress, setCalibrationProgress] = useState(0)
   const [cameraCaptureStatus, setCameraCaptureStatus] =
     useState<CameraCaptureStatus>('idle')
 
@@ -151,6 +215,48 @@ export const CameraView: React.FC<CameraViewProps> = ({
   const [videoCurrentTime, setVideoCurrentTime] = useState(0)
 
   // ------------------------------------------------------------
+  // 보정 샘플/시간만 초기화. 실패 안내의 잠금 상태는 유지한다.
+  // ------------------------------------------------------------
+  const resetCalibrationWindow = () => {
+    calibrationSamplesRef.current = []
+    calibrationStartedAtRef.current = null
+    setCalibrationProgress(0)
+  }
+
+  // ------------------------------------------------------------
+  // 카메라는 유지한 채 모션 보정만 처음부터 다시 시작한다.
+  // ------------------------------------------------------------
+  const resetMotionCalibration = () => {
+    resetCalibrationWindow()
+    calibrationFailedRef.current = false
+    motionStartThresholdRef.current = MIN_START_THRESHOLD
+    motionEndThresholdRef.current = MIN_END_THRESHOLD
+    isCalibratedRef.current = false
+    prevKeypointsRef.current = null
+    startCountRef.current = 0
+    setCalibrationStatus('preparing')
+  }
+
+  const handleRecalibrate = () => {
+    // 진행 중인 수어 세션이나 종료 처리는 건드리지 않는다.
+    if (
+      !isActive ||
+      inputMode !== 'camera' ||
+      motionActiveRef.current ||
+      streamStartingRef.current ||
+      streamEndingRef.current ||
+      isPredicting
+    ) {
+      return
+    }
+
+    resetMotionCalibration()
+    endCountRef.current = 0
+    wordBoundarySentRef.current = false
+    cooldownRef.current = 0
+  }
+
+  // ------------------------------------------------------------
   // 모션 게이트 초기화
   // ------------------------------------------------------------
   const resetMotionGate = () => {
@@ -160,13 +266,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
     cooldownRef.current = 0
     wordBoundarySentRef.current = false
 
-    calibrationSamplesRef.current = []
-
-    motionStartThresholdRef.current = MIN_START_THRESHOLD
-    motionEndThresholdRef.current = MIN_END_THRESHOLD
-
-    isCalibratedRef.current = false
-    prevKeypointsRef.current = null
+    resetMotionCalibration()
     streamStartingRef.current = false
 
     debugFrameCounterRef.current = 0
@@ -178,6 +278,8 @@ export const CameraView: React.FC<CameraViewProps> = ({
   // 프레임 루프 종료
   // ------------------------------------------------------------
   const stopFrameLoop = () => {
+    watchLoopRunRef.current += 1
+
     if (loopRef.current !== null) {
       cancelAnimationFrame(loopRef.current)
     }
@@ -438,6 +540,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
   // ------------------------------------------------------------
   const startWatchLoop = () => {
     stopFrameLoop()
+    const runId = watchLoopRunRef.current
 
     lastFrameAtRef.current = 0
 
@@ -446,6 +549,10 @@ export const CameraView: React.FC<CameraViewProps> = ({
     setCameraCaptureStatus('idle')
 
     const tick = async (time: number) => {
+      if (runId !== watchLoopRunRef.current) {
+        return
+      }
+
       if (
         time - lastFrameAtRef.current >=
         CAMERA_FRAME_INTERVAL_MS
@@ -458,10 +565,18 @@ export const CameraView: React.FC<CameraViewProps> = ({
             const keypoints =
               await extractCurrentVideoKeypoints()
 
+            if (runId !== watchLoopRunRef.current) {
+              return
+            }
+
             // 이번 프레임의 얼굴(이후 await 동안 다음 프레임으로 덮이지 않도록 지역 상수로 고정)
             const face = lastFaceRef.current
 
-            if (keypoints) {
+            if (
+              keypoints &&
+              keypoints.length >= KEYPOINT_VECTOR_LENGTH &&
+              keypoints.every((value) => Number.isFinite(value))
+            ) {
               // 실제 카메라 프레임 번호.
               // 전송 여부와 관계없이 증가한다.
               const cameraFrameId =
@@ -469,66 +584,110 @@ export const CameraView: React.FC<CameraViewProps> = ({
 
               cameraFrameIdRef.current += 1
 
-              const score = computeMotionScore(
-                prevKeypointsRef.current,
-                keypoints,
-              )
+              // 이전 프레임을 덮어쓰기 전에 포즈 검출 여부를 함께 확인한다.
+              const prev = prevKeypointsRef.current
+              const hasPreviousFrame =
+                prev !== null && prev.length === keypoints.length
+
+              const prevHasPose =
+                prev !== null &&
+                prev.length >= POSE_KEYPOINT_VALUES &&
+                prev.slice(0, POSE_KEYPOINT_VALUES).some((value) => value !== 0)
+              const hasPose = keypoints
+                .slice(0, POSE_KEYPOINT_VALUES)
+                .some((value) => value !== 0)
+              const prevHasHand =
+                prev !== null && 
+                prev.length >= KEYPOINT_VECTOR_LENGTH && 
+                hasDetectedAnyHand(prev)
+
+              const hasHand = hasDetectedAnyHand(keypoints)
+
+              const score = computeMotionScore(prev, keypoints)
 
               prevKeypointsRef.current = keypoints
 
               // ------------------------------------------------
               // 자동 캘리브레이션
+              // 이 분기에서는 스트림을 시작하거나 프레임을 전송하지 않는다.
               // ------------------------------------------------
               if (!isCalibratedRef.current) {
-                if (
-                  calibrationSamplesRef.current
-                    .length < CALIBRATION_FRAMES
-                ) {
-                  calibrationSamplesRef.current.push(
-                    score,
-                  )
-                }
+                if (!hasPose || !hasHand) {
+                  // 상체가 사라지면 연속 샘플과 경과 시간을 모두 다시 센다.
+                  resetCalibrationWindow()
+                  if (!calibrationFailedRef.current) {
+                    setCalibrationStatus('preparing')
+                  }
+                } else if (!calibrationFailedRef.current) {
+                  setCalibrationStatus('calibrating')
 
-                if (
-                  calibrationSamplesRef.current
-                    .length >= CALIBRATION_FRAMES
-                ) {
-                  const samples = [
-                    ...calibrationSamplesRef.current,
-                  ].sort((a, b) => a - b)
+                  // 첫 프레임과 미검출 → 재검출 프레임의 점프 값은 제외한다.
+                  if (hasPreviousFrame && prevHasPose && prevHasHand) {
+                    const now = performance.now()
 
-                  const percentileIndex =
-                    Math.floor(samples.length * 0.2)
+                    if (calibrationStartedAtRef.current === null) {
+                      calibrationStartedAtRef.current = now
+                    }
 
-                  const baseline =
-                    samples[percentileIndex]
+                    calibrationSamplesRef.current.push(score)
 
-                  motionStartThresholdRef.current =
-                    Math.max(
-                      MIN_START_THRESHOLD,
-                      baseline *
-                        START_THRESHOLD_MULTIPLIER,
+                    const elapsed = now - calibrationStartedAtRef.current
+                    const sampleProgress =
+                      calibrationSamplesRef.current.length / CALIBRATION_FRAMES
+                    const timeProgress = elapsed / CALIBRATION_MIN_DURATION_MS
+                    const progress = Math.min(
+                      99,
+                      Math.floor(Math.min(sampleProgress, timeProgress) * 100),
                     )
 
-                  motionEndThresholdRef.current =
-                    Math.max(
-                      MIN_END_THRESHOLD,
-                      baseline *
-                        END_THRESHOLD_MULTIPLIER,
+                    setCalibrationProgress((current) =>
+                      current === progress ? current : progress,
                     )
 
-                  isCalibratedRef.current = true
+                    if (
+                      calibrationSamplesRef.current.length >= CALIBRATION_FRAMES &&
+                      elapsed >= CALIBRATION_MIN_DURATION_MS
+                    ) {
+                      const samples = [...calibrationSamplesRef.current].sort(
+                        (a, b) => a - b,
+                      )
+                      const percentileIndex = Math.floor(samples.length * 0.2)
+                      const baseline = samples[percentileIndex]
 
-                  console.log(
-                    '[CAMERA] motion calibration complete:',
-                    {
-                      baseline,
-                      startThreshold:
-                        motionStartThresholdRef.current,
-                      endThreshold:
-                        motionEndThresholdRef.current,
-                    },
-                  )
+                      if (baseline > MAX_CALIBRATION_BASELINE) {
+                        // 높은 baseline을 임계값으로 채택하지 않는다.
+                        // 경고는 다음 프레임에도 유지하며 재시도 버튼으로만 해제한다.
+                        calibrationFailedRef.current = true
+                        resetCalibrationWindow()
+                        setCalibrationStatus('unstable')
+                        console.warn('[CAMERA] motion calibration rejected:', {
+                          baseline,
+                          maxBaseline: MAX_CALIBRATION_BASELINE,
+                        })
+                      } else {
+                        motionStartThresholdRef.current = Math.max(
+                          MIN_START_THRESHOLD,
+                          baseline * START_THRESHOLD_MULTIPLIER,
+                        )
+                        motionEndThresholdRef.current = Math.max(
+                          MIN_END_THRESHOLD,
+                          baseline * END_THRESHOLD_MULTIPLIER,
+                        )
+
+                        // 완료 상태와 실제 모션 게이트를 함께 전환한다.
+                        isCalibratedRef.current = true
+                        startCountRef.current = 0
+                        setCalibrationProgress(100)
+                        setCalibrationStatus('ready')
+
+                        console.log('[CAMERA] motion calibration complete:', {
+                          baseline,
+                          startThreshold: motionStartThresholdRef.current,
+                          endThreshold: motionEndThresholdRef.current,
+                        })
+                      }
+                    }
+                  }
                 }
               } else {
                 debugFrameCounterRef.current += 1
@@ -539,6 +698,10 @@ export const CameraView: React.FC<CameraViewProps> = ({
                 if (!motionActiveRef.current) {
                   if (cooldownRef.current > 0) {
                     cooldownRef.current -= 1
+                    startCountRef.current = 0
+                  } else if (!hasPose || !prevHasPose || !prevHasHand || !hasPreviousFrame) {
+                    // 보정 후에도 퇴장/재입장 점프가 새 세션을 시작하지 않게 한다.
+                    startCountRef.current = 0
                   } else if (
                     score >=
                     motionStartThresholdRef.current
@@ -574,6 +737,10 @@ export const CameraView: React.FC<CameraViewProps> = ({
 
                     const started =
                       await onStreamStart()
+
+                    if (runId !== watchLoopRunRef.current) {
+                      return
+                    }
 
                     streamStartingRef.current = false
 
@@ -613,9 +780,8 @@ export const CameraView: React.FC<CameraViewProps> = ({
                   // - 다시 움직이면 즉시 전송 재개
                   // --------------------------------------------
 
-                  const isStill =
-                    score <=
-                    motionEndThresholdRef.current
+                  const isStill = 
+                    !hasHand || score <= motionEndThresholdRef.current
 
                   if (isStill) {
                     endCountRef.current += 1
@@ -626,10 +792,11 @@ export const CameraView: React.FC<CameraViewProps> = ({
                   }
 
                   const shouldSendFrame =
-                    !isStill ||
+                    hasHand &&  
+                  (!isStill ||
                     endCountRef.current <=
                       WORD_END_FRAMES
-
+                    ) 
                   // --------------------------------------------
                   // frame 전송
                   // --------------------------------------------
@@ -764,8 +931,33 @@ export const CameraView: React.FC<CameraViewProps> = ({
                   }
                 }
               }
+            } else {
+              // null/빈 배열/짧은 배열/NaN 프레임도 연속 보정을 끊는다.
+              // 추출 실패 전후의 프레임을 직접 비교하지 않는다.
+              prevKeypointsRef.current = null
+              startCountRef.current = 0
+              if (!isCalibratedRef.current) {
+                resetCalibrationWindow()
+                if (!calibrationFailedRef.current) {
+                  setCalibrationStatus('preparing')
+                }
+              }
             }
           } catch (err) {
+            if (runId !== watchLoopRunRef.current) {
+              return
+            }
+
+            // 예외가 난 구간을 정상 보정 시간/연속 샘플로 계산하지 않는다.
+            prevKeypointsRef.current = null
+            startCountRef.current = 0
+            if (!isCalibratedRef.current) {
+              resetCalibrationWindow()
+              if (!calibrationFailedRef.current) {
+                setCalibrationStatus('preparing')
+              }
+            }
+
             console.error(
               '[CAMERA] keypoint extraction/send error:',
               err,
@@ -780,13 +972,16 @@ export const CameraView: React.FC<CameraViewProps> = ({
             // 프레임 전송 중 오류가 발생해도
             // 다음 frame loop는 계속 동작하도록 한다.
           } finally {
-            isSendingFrameRef.current = false
+            if (runId === watchLoopRunRef.current) {
+              isSendingFrameRef.current = false
+            }
           }
         }
       }
 
-      loopRef.current =
-        requestAnimationFrame(tick)
+      if (runId === watchLoopRunRef.current) {
+        loopRef.current = requestAnimationFrame(tick)
+      }
     }
 
     loopRef.current =
@@ -951,7 +1146,9 @@ export const CameraView: React.FC<CameraViewProps> = ({
           cameraCaptureStatus ===
           'recording'
             ? 'REC 30FPS'
-            : 'WATCHING'
+            : !isCalibratedRef.current
+              ? 'CALIBRATING'
+              : 'READY'
         } | CAM: ${
           cameraFrameIdRef.current
         } | SENT: ${
@@ -1047,7 +1244,11 @@ export const CameraView: React.FC<CameraViewProps> = ({
       />
 
       <div
-        className="relative w-full aspect-video min-h-[280px] sm:min-h-[420px] bg-brand-emerald rounded-2xl flex flex-col items-center justify-center overflow-hidden border border-emerald-950/20 shadow-inner group cursor-pointer"
+        className={`relative w-full aspect-video ${
+          isActive && inputMode === 'camera'
+            ? 'min-h-[400px]'
+            : 'min-h-[280px]'
+        } sm:min-h-[420px] bg-brand-emerald rounded-2xl flex flex-col items-center justify-center overflow-hidden border border-emerald-950/20 shadow-inner group cursor-pointer`}
         onClick={() => {
           if (
             !isActive &&
@@ -1107,37 +1308,147 @@ export const CameraView: React.FC<CameraViewProps> = ({
         {isActive &&
           inputMode === 'camera' && (
             <>
-              <div className="absolute top-4 left-4 right-4 flex items-center justify-between z-20 pointer-events-none">
-                <div className="flex items-center gap-2 bg-black/50 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/10">
+              <div className="pointer-events-none absolute inset-x-4 top-4 z-20 flex items-center justify-between gap-3">
+                <div className="inline-flex min-w-0 items-center gap-2 rounded-lg bg-neutral-950/80 px-3 py-2 backdrop-blur-sm">
                   <span
-                    className={`w-2.5 h-2.5 rounded-full ${
-                      cameraCaptureStatus ===
-                      'recording'
-                        ? 'bg-red-500 animate-ping'
-                        : 'bg-brand-green'
+                    aria-hidden="true"
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                      cameraCaptureStatus === 'recording'
+                        ? 'bg-red-400'
+                        : calibrationStatus === 'ready'
+                          ? 'bg-emerald-400'
+                          : calibrationStatus === 'unstable'
+                            ? 'bg-amber-300'
+                            : 'bg-white/60'
                     }`}
                   />
-
-                  <span className="text-xs font-bold text-white">
-                    {cameraCaptureStatus ===
-                    'recording'
+                  <span className="truncate text-xs font-medium leading-4 text-white/90">
+                    {cameraCaptureStatus === 'recording'
                       ? MANUAL_STOP_MODE
-                        ? '인식 중 · 끝나면 종료 버튼'
-                        : 'LIVE 30fps 인식 중'
+                        ? '인식 중 · 끝나면 수어 종료'
+                        : '수어 인식 중'
                       : isPredicting
-                        ? '번역 중...'
-                        : '수어 감지 대기 중'}
+                        ? '번역 중'
+                        : calibrationStatus === 'preparing'
+                          ? '위치 맞추기'
+                          : calibrationStatus === 'calibrating'
+                            ? '보정 중'
+                            : calibrationStatus === 'unstable'
+                              ? '보정 필요'
+                              : '인식 대기'}
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2 bg-black/50 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/10">
-                  <Sparkles className="w-4 h-4 text-brand-green animate-pulse" />
-
-                  <span className="text-xs font-bold text-white">
-                    프레임: {sentFramesDisplay}
+                {cameraCaptureStatus === 'recording' && (
+                  <span className="shrink-0 rounded-lg bg-neutral-950/80 px-3 py-2 text-[11px] leading-4 tabular-nums text-white/70 backdrop-blur-sm">
+                    {sentFramesDisplay} 프레임
                   </span>
-                </div>
+                )}
               </div>
+
+              {/* 상체 검출은 포즈 앞 99값으로 확인한다. 모서리 선은 구도 안내용이다. */}
+              {cameraCaptureStatus === 'idle' &&
+                !cameraError &&
+                !isPredicting && (
+                  <div className="pointer-events-none absolute inset-x-4 bottom-16 top-16 z-20 flex flex-col gap-5 sm:inset-x-6 sm:gap-6">
+                    {calibrationStatus !== 'ready' && (
+                      <div
+                        aria-hidden="true"
+                        className="flex min-h-0 flex-1 items-center justify-center"
+                      >
+                        <div className="relative h-full max-h-[440px] w-[88%] max-w-[560px]">
+                          <span className="absolute left-0 top-0 h-6 w-6 rounded-tl-md border-l border-t border-white/80" />
+                          <span className="absolute right-0 top-0 h-6 w-6 rounded-tr-md border-r border-t border-white/80" />
+                          <span className="absolute bottom-0 left-0 h-6 w-6 rounded-bl-md border-b border-l border-white/80" />
+                          <span className="absolute bottom-0 right-0 h-6 w-6 rounded-br-md border-b border-r border-white/80" />
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="mx-auto mt-auto w-full max-w-md shrink-0 rounded-xl border border-white/10 bg-neutral-950/90 px-4 py-3 backdrop-blur-sm">
+                      <div className="flex items-start justify-between gap-3">
+                        <div
+                          role="status"
+                          aria-live="polite"
+                          aria-atomic="true"
+                          className="min-w-0 flex-1"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span
+                              aria-hidden="true"
+                              className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                                calibrationStatus === 'ready'
+                                  ? 'bg-emerald-400'
+                                  : calibrationStatus === 'unstable'
+                                    ? 'bg-amber-300'
+                                    : 'bg-white/60'
+                              }`}
+                            />
+                            <p className="text-[13px] font-medium leading-5 text-white">
+                              {calibrationStatus === 'ready'
+                                ? '보정 완료'
+                                : calibrationStatus === 'unstable'
+                                  ? '다시 보정해 주세요'
+                                  : calibrationStatus === 'calibrating'
+                                    ? '잠시 멈춰 주세요'
+                                    : '상체를 화면에 맞춰 주세요'}
+                            </p>
+                          </div>
+                          <p className="mt-1 text-xs leading-5 text-white/70">
+                            {calibrationStatus === 'ready'
+                              ? '이제 수어를 시작해 주세요.'
+                              : calibrationStatus === 'unstable'
+                                ? '움직임이 감지되었습니다. 잠시 멈춘 뒤 다시 시도해 주세요.'
+                                : calibrationStatus === 'calibrating'
+                                  ? '손과 상체를 편안하게 고정해 주세요.'
+                                  : '얼굴과 양손이 프레임 안에 보이게 맞춰 주세요.'}
+                          </p>
+                        </div>
+
+                        {calibrationStatus === 'calibrating' && (
+                          <span
+                            aria-hidden="true"
+                            className="shrink-0 pt-0.5 text-xs leading-5 tabular-nums text-white/70"
+                          >
+                            {calibrationProgress}%
+                          </span>
+                        )}
+
+                        {(calibrationStatus === 'unstable' ||
+                        calibrationStatus === 'ready') && (
+                          <button
+                            type="button"
+                            aria-label="모션 캘리브레이션 다시 시작"
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              handleRecalibrate()
+                            }}
+                            className="pointer-events-auto inline-flex min-h-[44px] shrink-0 items-center justify-center rounded-lg bg-white/10 px-3 text-xs font-medium text-white transition-colors hover:bg-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white motion-reduce:transition-none"
+                          >
+                            다시 보정
+                          </button>
+                        )}
+                      </div>
+
+                      {calibrationStatus === 'calibrating' && (
+                        <div
+                          role="progressbar"
+                          aria-label="모션 캘리브레이션 진행률"
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-valuenow={calibrationProgress}
+                          className="mt-3 h-0.5 overflow-hidden rounded-full bg-white/20"
+                        >
+                          <div
+                            className="h-full rounded-full bg-white/90 transition-[width] duration-150 motion-reduce:transition-none"
+                            style={{ width: `${calibrationProgress}%` }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
 
               {/* ---------------------------------------------- */}
               {/* 오류 표시 */}
