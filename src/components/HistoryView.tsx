@@ -1,8 +1,9 @@
 import { FormEvent, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { ArrowLeft, Check, Clock, Copy, FileSpreadsheet, Filter, Plus, Search, Trash2, Pencil } from 'lucide-react'
+import { ArrowLeft, Check, Clock, Copy, FileSpreadsheet, Plus, Search, Trash2, Pencil } from 'lucide-react'
 import { MEDICAL_CATEGORIES } from '../data'
 import { TranslationLog } from '../types'
+import { copyToClipboard, getErrorMessage } from '../utils'
 
 interface HistoryViewProps {
   logs: TranslationLog[]
@@ -34,6 +35,9 @@ function formatConfidence(value: number) {
 function wordsLabel(glossResult: string) {
   return glossResult.trim() || 'none'
 }
+
+const BADGE_CLASS = 'text-xs font-bold border px-2 py-0.5 rounded-sm'
+const ICON_BUTTON_CLASS = 'p-1.5 hover:bg-neutral-100 rounded-md text-neutral-400 hover:text-primary transition-colors duration-100'
 
 export const HistoryView = ({
   logs,
@@ -73,41 +77,40 @@ export const HistoryView = ({
   )
 
   const handleCopy = (logId: number, text: string) => {
-    navigator.clipboard?.writeText(text)
+    copyToClipboard(text)
     setCopiedId(logId)
     window.setTimeout(() => setCopiedId(null), 1500)
+  }
+
+  /** 부모 콜백을 실행하고, 실패하면 화면 상단 오류로 보여준다. 성공 여부를 돌려준다. */
+  const runAction = async (action: () => Promise<void>, fallbackMessage: string) => {
+    setError(null)
+    try {
+      await action()
+      return true
+    } catch (err) {
+      setError(getErrorMessage(err, fallbackMessage))
+      return false
+    }
   }
 
   const handleManualAddSubmit = async (event: FormEvent) => {
     event.preventDefault()
     if (!manualText.trim()) return
-    setError(null)
-    try {
-      await onAddManualLog(manualText.trim(), manualCat)
+    const ok = await runAction(() => onAddManualLog(manualText.trim(), manualCat), '기록 추가에 실패했습니다.')
+    if (ok) {
       setManualText('')
       setShowAddForm(false)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '기록 추가에 실패했습니다.')
     }
   }
 
   const handleDelete = async (logId: number) => {
-    setError(null)
-    try {
-      await onDeleteLog(logId)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '기록 삭제에 실패했습니다.')
-    }
+    await runAction(() => onDeleteLog(logId), '기록 삭제에 실패했습니다.')
   }
 
   const handleClear = async () => {
     if (!window.confirm('전체 번역 기록을 삭제할까요?')) return
-    setError(null)
-    try {
-      await onClearLogs()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '전체 삭제에 실패했습니다.')
-    }
+    await runAction(onClearLogs, '전체 삭제에 실패했습니다.')
   }
 
   const startEditPatientId = (log: TranslationLog) => {
@@ -122,13 +125,8 @@ export const HistoryView = ({
   }
 
   const savePatientId = async (logId: number) => {
-    setError(null)
-    try {
-      await onUpdatePatientId(logId, editingPatientId.trim() || 'none')
-      cancelEditPatientId()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '환자 ID 수정에 실패했습니다.')
-    }
+    const ok = await runAction(() => onUpdatePatientId(logId, editingPatientId.trim() || 'none'), '환자 ID 수정에 실패했습니다.')
+    if (ok) cancelEditPatientId()
   }
 
   return (
@@ -247,27 +245,6 @@ export const HistoryView = ({
             className="w-full pl-9 pr-4 py-2 bg-neutral-50 hover:bg-neutral-100/60 focus:bg-white border border-neutral-200 focus:border-primary rounded-lg text-sm font-medium outline-none transition-all duration-200 font-hyper text-on-surface"
           />
         </div>
-
-        <div className="flex flex-wrap gap-1.5 mt-3 items-center">
-          <span className="text-xs font-extrabold text-neutral-400 mr-1.5 flex items-center gap-0.5 uppercase tracking-wide">
-            <Filter className="w-2.5 h-2.5" />
-            분류 필터:
-          </span>
-          {categories.map((cat) => {
-            const isSelected = selectedCategory === cat
-            return (
-              <button
-                key={cat}
-                onClick={() => setSelectedCategory(cat)}
-                className={`px-3 py-1 rounded-full text-xs sm:text-sm font-bold leading-none border transition-all duration-200 ${
-                  isSelected ? 'bg-primary text-white border-primary shadow-xs' : 'bg-neutral-50 hover:bg-neutral-100 text-neutral-500 border-neutral-200'
-                }`}
-              >
-                {cat}
-              </button>
-            )
-          })}
-        </div>
       </div>
 
       <div className="space-y-2.5">
@@ -317,24 +294,22 @@ export const HistoryView = ({
                           </button>
                         </span>
                       ) : (
-                        <>
-                          <span className="text-xs font-bold bg-secondary-container/20 text-secondary border border-secondary-container/50 px-2 py-0.5 rounded-sm">
-                            환자: {log.patient_id || 'none'}
-                          </span>
-                        </>
+                        <span className={`${BADGE_CLASS} bg-secondary-container/20 text-secondary border-secondary-container/50`}>
+                          환자: {log.patient_id || 'none'}
+                        </span>
                       )}
 
-                      <span className="text-xs font-bold bg-indigo-50 text-indigo-600 border border-indigo-200 px-2 py-0.5 rounded-sm">
+                      <span className={`${BADGE_CLASS} bg-indigo-50 text-indigo-600 border-indigo-200`}>
                         의료진: {log.medical_id}
                       </span>
-                      <span className="text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-sm">
+                      <span className={`${BADGE_CLASS} bg-amber-50 text-amber-700 border-amber-200`}>
                         신뢰도: {formatConfidence(log.confidence)}
                       </span>
-                      <span className="text-xs font-bold bg-neutral-50 text-neutral-600 border border-neutral-200 px-2 py-0.5 rounded-sm">
+                      <span className={`${BADGE_CLASS} bg-neutral-50 text-neutral-600 border-neutral-200`}>
                         글로스: {wordsLabel(log.gloss_result)}
                       </span>
                       {log.category && (
-                        <span className="text-xs font-bold bg-cyan-50 text-secondary border border-cyan-200 px-2 py-0.5 rounded-sm">
+                        <span className={`${BADGE_CLASS} bg-cyan-50 text-secondary border-cyan-200`}>
                           {log.category}
                         </span>
                       )}
@@ -353,14 +328,14 @@ export const HistoryView = ({
                   <div className="flex items-center gap-1">
                     <button
                       onClick={() => startEditPatientId(log)}
-                      className="p-1.5 hover:bg-neutral-100 rounded-md text-neutral-400 hover:text-primary transition-colors duration-100"
+                      className={ICON_BUTTON_CLASS}
                       title="환자 ID 수정"
-                      >
+                    >
                       <Pencil className="w-4 h-4" />
-                    </button>  
+                    </button>
                     <button
                       onClick={() => handleCopy(log.log_id, log.translated_text)}
-                      className="p-1.5 hover:bg-neutral-100 rounded-md text-neutral-400 hover:text-primary transition-colors duration-100"
+                      className={ICON_BUTTON_CLASS}
                       title="클립보드에 복사"
                     >
                       {copiedId === log.log_id ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
@@ -372,7 +347,6 @@ export const HistoryView = ({
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
-
                   </div>
                 </div>
               </motion.div>

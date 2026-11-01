@@ -1,29 +1,69 @@
+export type ViewState = 'main' | 'history' | 'login' | 'register'
 
-export type ViewState = 'main' | 'history' | 'login';
+export type UserRole = 'doctor' | 'patient'
+
+export interface TranslationCandidate {
+  text: string
+  confidence: number
+}
 
 export interface TranslationLog {
-  log_id: number;
-  medical_id: number;       // 로그인된 의료진 user_id
-  patient_id: string;       // 환자 식별번호
-  input_time: string;       // 번역 요청 시각 (ISO datetime string)
-  gloss_result: string;     // 인식된 수어 글로스 시퀀스
-  translated_text: string;  // 최종 번역 문장
-  confidence: number;       // 번역 신뢰도 (0~100 또는 0~1, 백엔드 기준에 맞춰 사용)
-  category?: string;        // 진료 분류 카테고리 (필터링 유지용)
-  isCustom?: boolean;       // 직접 수동 입력 여부
+  log_id: number
+  medical_id: number
+  patient_id: string
+  input_time: string
+  gloss_result: string
+  translated_text: string
+  confidence: number
+  category?: string
 }
 
 export interface UserState {
-  isLoggedIn: boolean;
-  email: string | null;
-  name: string | null;
-  userId?: number;
+  isLoggedIn: boolean
+  id: string | null
+  medical_id: number | null
+  email: string | null
+  name: string | null
+  role: UserRole | null
 }
 
 export interface GesturePreset {
-  id: string;
-  gestureName: string;
-  translationText: string;
-  category: string;
-  description: string;
+  id: string
+  gestureName: string
+  translationText: string
+  category: string
+  description: string
+}
+
+export interface ApiUser {
+  id: string
+  medical_id: number
+  email: string
+  name: string
+  role: UserRole
+  created_at: string
+}
+
+export interface ApiSession {
+  id: string
+  doctor_id: string
+  medical_id?: number | null
+  patient_id?: string | null
+  title: string
+  status: 'active' | 'closed'
+  created_at: string
+  closed_at?: string | null
+}
+
+export interface ApiTranslation extends TranslationLog {}
+
+export interface AiPredictionResult {
+  type: 'prediction'
+  text: string
+  words: string[]
+  gloss_result: string
+  confidence: number
+  frame_count?: number
+  npy_saved?: boolean
+  translation_candidates?: TranslationCandidate[]
 }
