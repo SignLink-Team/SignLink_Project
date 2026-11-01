@@ -41,6 +41,129 @@ type MotionCalibrationStatus =
   | 'unstable'
   | 'ready'
 
+// 상반신(머리~가슴) 구도 가이드 실루엣.
+// 업로드한 가이드 이미지에서 윤곽만 벡터로 옮긴 것이다(모서리 꺾쇠와 배경은 제외).
+// viewBox는 width x height, path는 머리/목과 어깨 두 덩어리로 이루어져 있다.
+const UPPER_BODY_GUIDE = {
+  width: 402,
+  height: 491,
+  path:
+    'M3.0 406.0 L3.0 430.0 L4.0 431.0 L4.0 435.0 L21.0 447.0 L40.0 457.0 L78.0 471.0 L81.0 471.0 L102.0 477.0 L106.0 477.0 L107.0 478.0 L111.0 478.0 L117.0 480.0 L122.0 480.0 L123.0 481.0 L128.0 481.0 L129.0 482.0 L136.0 482.0 L137.0 483.0 L143.0 483.0 L144.0 484.0 L153.0 484.0 L154.0 485.0 L166.0 485.0 L167.0 486.0 L213.0 487.0 L214.0 486.0 L247.0 485.0 L248.0 484.0 L257.0 484.0 L258.0 483.0 L264.0 483.0 L265.0 482.0 L272.0 482.0 L273.0 481.0 L284.0 480.0 L285.0 479.0 L299.0 477.0 L304.0 475.0 L308.0 475.0 L344.0 464.0 L359.0 457.0 L361.0 457.0 L375.0 450.0 L397.0 435.0 L397.0 431.0 L398.0 430.0 L398.0 406.0 L397.0 405.0 L397.0 396.0 L396.0 395.0 L396.0 389.0 L395.0 388.0 L392.0 371.0 L386.0 354.0 L377.0 336.0 L366.0 320.0 L341.0 294.0 L330.0 286.0 L313.0 277.0 L311.0 277.0 L306.0 274.0 L291.0 269.0 L288.0 267.0 L283.0 266.0 L267.0 258.0 L264.0 258.0 L259.0 265.0 L239.0 284.0 L224.0 292.0 L214.0 295.0 L209.0 295.0 L208.0 296.0 L193.0 296.0 L192.0 295.0 L187.0 295.0 L177.0 292.0 L167.0 287.0 L158.0 281.0 L142.0 265.0 L137.0 258.0 L134.0 258.0 L125.0 263.0 L95.0 274.0 L76.0 283.0 L60.0 294.0 L39.0 315.0 L24.0 336.0 L15.0 354.0 L9.0 371.0 L9.0 374.0 L6.0 383.0 L5.0 395.0 L4.0 396.0 L4.0 405.0 Z M187.0 3.0 L186.0 4.0 L180.0 4.0 L179.0 5.0 L170.0 6.0 L156.0 11.0 L146.0 16.0 L136.0 23.0 L120.0 40.0 L115.0 48.0 L108.0 64.0 L108.0 67.0 L105.0 76.0 L105.0 81.0 L104.0 82.0 L103.0 112.0 L100.0 114.0 L95.0 120.0 L95.0 123.0 L94.0 124.0 L94.0 135.0 L95.0 136.0 L97.0 146.0 L101.0 154.0 L107.0 161.0 L109.0 171.0 L114.0 186.0 L125.0 207.0 L131.0 215.0 L143.0 227.0 L159.0 238.0 L159.0 259.0 L162.0 262.0 L177.0 270.0 L190.0 274.0 L199.0 274.0 L201.0 275.0 L202.0 274.0 L211.0 274.0 L224.0 270.0 L239.0 262.0 L242.0 259.0 L242.0 238.0 L258.0 227.0 L270.0 215.0 L279.0 202.0 L287.0 186.0 L292.0 171.0 L294.0 161.0 L298.0 157.0 L304.0 146.0 L306.0 139.0 L306.0 135.0 L307.0 134.0 L307.0 124.0 L305.0 118.0 L298.0 112.0 L297.0 82.0 L296.0 81.0 L296.0 76.0 L295.0 75.0 L293.0 64.0 L286.0 48.0 L278.0 36.0 L261.0 20.0 L255.0 16.0 L240.0 9.0 L231.0 6.0 L227.0 6.0 L221.0 4.0 L215.0 4.0 L214.0 3.0 Z',
+}
+
+// 구도 가이드는 안내용이다. 실제 얼굴/상체/양손 검출 판정과 모션 게이트는 변경하지 않는다.
+const CALIBRATION_GUIDE_TEXT: Record<
+  MotionCalibrationStatus,
+  { title: string; description: string }
+> = {
+  preparing: {
+    title: '상반신을 윤곽에 맞춰 주세요',
+    description:
+      '머리부터 가슴까지가 윤곽 안에 들어오게 앉고, 두 손은 가슴 앞에 올려 주세요. 맞으면 자동으로 다음 단계로 넘어가요.',
+  },
+  calibrating: {
+    title: '그대로 가만히 계세요',
+    description:
+      '약 2초 동안 몸과 손을 움직이지 마세요. 끝나면 바로 수어를 시작할 수 있어요.',
+  },
+  unstable: {
+    title: '움직임이 감지되었어요',
+    description:
+      '아래 ‘다시 맞추기’를 누른 뒤, 몸과 손을 움직이지 말고 가만히 계세요.',
+  },
+  ready: {
+    title: '이제 수어를 시작하세요!',
+    description:
+      '손을 움직이면 자동으로 인식이 시작돼요. 수어를 마치면 빨간 ‘수어 종료’ 버튼을 눌러 주세요.',
+  },
+}
+
+// 처음 쓰는 사람을 위한 4단계. 카메라를 켜기 전에는 사용 방법으로, 켠 뒤에는 현재 단계 표시로 쓴다.
+const GUIDE_STEPS = [
+  { title: '카메라 켜기', hint: '위 화면을 눌러 카메라를 켜요.' },
+  {
+    title: '자리 맞추기',
+    hint: '머리부터 가슴까지가 윤곽 안에 들어오게 앉고, 두 손은 가슴 앞에 올려요.',
+  },
+  { title: '가만히 있기', hint: '약 2초 동안 움직이지 않고 기다려요.' },
+  {
+    title: '수어 하기',
+    hint: '손을 움직이면 인식이 시작돼요. 다 끝나면 빨간 ‘수어 종료’ 버튼을 눌러요.',
+  },
+] as const
+
+// current: 1~4는 진행 중인 단계, 5는 모든 단계 완료(번역 중)
+function GuideSteps({ current }: { current: number }) {
+  return (
+    <ol aria-label="사용 단계" className="grid grid-cols-4 gap-2 sm:gap-3">
+      {GUIDE_STEPS.map((step, index) => {
+        const number = index + 1
+        const done = number < current
+        const active = number === current
+
+        return (
+          <li
+            key={step.title}
+            aria-current={active ? 'step' : undefined}
+            className="flex flex-col items-center gap-1.5 text-center"
+          >
+            <span
+              className={`flex h-9 w-9 items-center justify-center rounded-full text-base font-bold sm:h-10 sm:w-10 sm:text-lg ${
+                done
+                  ? 'bg-emerald-400 text-neutral-950'
+                  : active
+                    ? 'bg-white text-neutral-950 ring-4 ring-white/30'
+                    : 'bg-white/10 text-white/60'
+              }`}
+            >
+              <span aria-hidden="true">{done ? '✓' : number}</span>
+              <span className="sr-only">
+                {done ? `${number}단계 완료` : `${number}단계`}
+              </span>
+            </span>
+            <span
+              className={`break-keep text-sm leading-snug sm:text-base ${
+                active
+                  ? 'font-bold text-white'
+                  : done
+                    ? 'font-medium text-emerald-200'
+                    : 'text-white/60'
+              }`}
+            >
+              {step.title}
+            </span>
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
+
+// 카메라가 꺼져 있을 때 영상 아래에 보여주는 사용 방법 카드
+function HowToCard() {
+  return (
+    <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-950 px-5 py-5 text-white sm:px-7 sm:py-6">
+      <h3 className="text-xl font-bold sm:text-2xl">이렇게 사용해요</h3>
+
+      <ol className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {GUIDE_STEPS.map((step, index) => (
+          <li key={step.title} className="flex gap-3 rounded-xl bg-white/5 p-4">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white text-lg font-bold text-neutral-950">
+              {index + 1}
+            </span>
+            <div className="min-w-0">
+              <p className="text-lg font-bold">{step.title}</p>
+              <p className="mt-1 break-keep text-base leading-relaxed text-white/85">
+                {step.hint}
+              </p>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
+}
+
 const CAMERA_EXTRACTION_FPS = 30
 const CAMERA_FRAME_INTERVAL_MS = 1000 / CAMERA_EXTRACTION_FPS
 const UPLOAD_EXTRACTION_FPS = 30
@@ -63,6 +186,8 @@ const RIGHT_HAND_START = LEFT_HAND_START + HAND_KEYPOINT_VALUES
 // 추정 초기값. 실제 카메라/추출기에서 측정한 정지 잡음에 맞춰 조정한다.
 // baseline(기존 20백분위값)이 이 값을 초과하면 보정을 완료하지 않는다.
 const MAX_CALIBRATION_BASELINE = 0.02
+// 상반신/손이 이 프레임 수 이상 계속 안 보이면 "무엇이 안 보이는지"를 안내한다(검출 지연으로 문구가 깜빡이지 않게).
+const MISSING_NOTICE_FRAMES = 10
 const START_THRESHOLD_MULTIPLIER = 6
 const END_THRESHOLD_MULTIPLIER = 2.5
 const MIN_START_THRESHOLD = 0.0015
@@ -198,13 +323,14 @@ export const CameraView: React.FC<CameraViewProps> = ({
   const [calibrationStatus, setCalibrationStatus] =
     useState<MotionCalibrationStatus>('preparing')
   const [calibrationProgress, setCalibrationProgress] = useState(0)
+  // 보정이 시작되지 못하는 이유(상반신/손 미검출). 안내 문구를 구체적으로 바꾸는 데만 쓴다.
+  const [missingPart, setMissingPart] = useState<'body' | 'hand' | null>(null)
+  const missingFramesRef = useRef(0)
   const [cameraCaptureStatus, setCameraCaptureStatus] =
     useState<CameraCaptureStatus>('idle')
 
   const [activeGesture, setActiveGesture] =
     useState<GesturePreset | null>(null)
-
-  const [sentFramesDisplay, setSentFramesDisplay] = useState(0)
 
   const [videoFile, setVideoFile] = useState<File | null>(null)
   const [videoObjectUrl, setVideoObjectUrl] =
@@ -234,6 +360,8 @@ export const CameraView: React.FC<CameraViewProps> = ({
     isCalibratedRef.current = false
     prevKeypointsRef.current = null
     startCountRef.current = 0
+    missingFramesRef.current = 0
+    setMissingPart(null)
     setCalibrationStatus('preparing')
   }
 
@@ -294,7 +422,6 @@ export const CameraView: React.FC<CameraViewProps> = ({
   const resetStreamingState = () => {
     resetMotionGate()
     streamEndingRef.current = false
-    setSentFramesDisplay(0)
     setCameraCaptureStatus('idle')
     setCameraError(null)
   }
@@ -357,7 +484,6 @@ export const CameraView: React.FC<CameraViewProps> = ({
     cooldownRef.current = MANUAL_STOP_COOLDOWN_FRAMES
 
     setCameraCaptureStatus('idle')
-    setSentFramesDisplay(sentFramesRef.current)
 
     console.log('[CAMERA] manual stop - close stream', {
       sentFrames: sentFramesRef.current,
@@ -615,10 +741,19 @@ export const CameraView: React.FC<CameraViewProps> = ({
                 if (!hasPose || !hasHand) {
                   // 상체가 사라지면 연속 샘플과 경과 시간을 모두 다시 센다.
                   resetCalibrationWindow()
+
+                  // 어느 쪽이 안 보이는지 안내하기 위해 기록한다(잠깐 끊기는 정도로는 문구를 바꾸지 않는다).
+                  missingFramesRef.current += 1
+                  if (missingFramesRef.current >= MISSING_NOTICE_FRAMES) {
+                    setMissingPart(!hasPose ? 'body' : 'hand')
+                  }
+
                   if (!calibrationFailedRef.current) {
                     setCalibrationStatus('preparing')
                   }
                 } else if (!calibrationFailedRef.current) {
+                  missingFramesRef.current = 0
+                  setMissingPart(null)
                   setCalibrationStatus('calibrating')
 
                   // 첫 프레임과 미검출 → 재검출 프레임의 점프 값은 제외한다.
@@ -729,7 +864,6 @@ export const CameraView: React.FC<CameraViewProps> = ({
                     wordBoundarySentRef.current = false
 
                     sentFramesRef.current = 0
-                    setSentFramesDisplay(0)
 
                     setCameraCaptureStatus(
                       'recording',
@@ -856,18 +990,6 @@ export const CameraView: React.FC<CameraViewProps> = ({
                   }
 
                   // --------------------------------------------
-                  // 15프레임마다 UI 업데이트
-                  // --------------------------------------------
-                  if (
-                    sentFramesRef.current > 0 &&
-                    sentFramesRef.current % 15 === 0
-                  ) {
-                    setSentFramesDisplay(
-                      sentFramesRef.current,
-                    )
-                  }
-
-                  // --------------------------------------------
                   // 문장 종료
                   //
                   // 일정 시간 계속 정지하면 스트림 종료.
@@ -896,9 +1018,6 @@ export const CameraView: React.FC<CameraViewProps> = ({
 
                     setCameraCaptureStatus('idle')
 
-                    setSentFramesDisplay(
-                      sentFramesRef.current,
-                    )
 
                     console.log(
                       '[CAMERA] sentence end - close stream',
@@ -1222,6 +1341,82 @@ export const CameraView: React.FC<CameraViewProps> = ({
     }
   }, [inputMode, videoObjectUrl])
 
+  const isRecording = cameraCaptureStatus === 'recording'
+  const showPositionGuide =
+    isActive &&
+    inputMode === 'camera' &&
+    !isRecording &&
+    !isPredicting &&
+    !cameraError &&
+    calibrationStatus !== 'ready'
+
+  const canRecalibrate =
+    !isRecording &&
+    !isPredicting &&
+    (calibrationStatus === 'unstable' || calibrationStatus === 'ready')
+
+  const progress = Number.isFinite(calibrationProgress)
+    ? Math.min(100, Math.max(0, calibrationProgress))
+    : 0
+
+  // 현재 단계(1~4). 5는 모든 단계를 마치고 번역 결과를 기다리는 중.
+  const currentStep = isPredicting
+    ? 5
+    : isRecording
+      ? 4
+      : { preparing: 2, calibrating: 3, unstable: 3, ready: 4 }[calibrationStatus]
+
+  // 보정이 시작되지 못하는 이유를 알면 그 이유를 직접 안내한다(조용히 기다리게 두지 않는다).
+  const preparingText =
+    missingPart === 'body'
+      ? {
+          title: '상반신이 보이지 않아요',
+          description:
+            '카메라 앞에 앉아 머리부터 가슴까지가 윤곽 안에 들어오게 해 주세요.',
+        }
+      : missingPart === 'hand'
+        ? {
+            title: '두 손이 보이지 않아요',
+            description:
+              '두 손을 가슴 앞으로 올려 카메라에 보여 주세요. 손이 보이면 자동으로 다음 단계로 넘어가요.',
+          }
+        : CALIBRATION_GUIDE_TEXT.preparing
+
+  const guideText = isRecording
+    ? {
+        title: '수어를 인식하고 있어요',
+        description:
+          '두 손을 화면 안에 두고 수어를 해 주세요. 다 끝나면 빨간 ‘수어 종료’ 버튼을 눌러 주세요.',
+      }
+    : isPredicting
+      ? {
+          title: '번역하고 있어요',
+          description:
+            '결과가 나올 때까지 잠시만 기다려 주세요. 카메라는 그대로 켜 두세요.',
+        }
+      : calibrationStatus === 'preparing'
+        ? preparingText
+        : CALIBRATION_GUIDE_TEXT[calibrationStatus]
+
+  const statusLabel = {
+    preparing: '자리 맞추기',
+    calibrating: '가만히 있기',
+    unstable: '다시 맞추기 필요',
+    ready: '수어 시작 가능',
+  }[calibrationStatus]
+
+  const statusText = isRecording
+    ? `${currentStep}/4 수어 인식 중`
+    : isPredicting
+      ? '번역 중'
+      : `${currentStep}/4 ${statusLabel}`
+
+  // 영상 위 실루엣에 붙는 한 줄 안내
+  const guideLabel =
+    missingPart === 'hand'
+      ? '두 손을 가슴 앞으로 올려 주세요'
+      : '윤곽에 상반신을 맞춰 주세요'
+
   return (
     <div className="w-full">
       <input
@@ -1244,11 +1439,13 @@ export const CameraView: React.FC<CameraViewProps> = ({
       />
 
       <div
-        className={`relative w-full aspect-video ${
+        className={`relative w-full ${
           isActive && inputMode === 'camera'
-            ? 'min-h-[400px]'
-            : 'min-h-[280px]'
-        } sm:min-h-[420px] bg-brand-emerald rounded-2xl flex flex-col items-center justify-center overflow-hidden border border-emerald-950/20 shadow-inner group cursor-pointer`}
+            ? 'aspect-[4/3] bg-neutral-950'
+            : 'aspect-video min-h-[340px] bg-brand-emerald sm:min-h-[420px]'
+        } rounded-2xl flex flex-col items-center justify-center overflow-hidden border border-emerald-950/20 shadow-inner group ${
+          !isActive && inputMode !== 'video' ? 'cursor-pointer' : ''
+        }`}
         onClick={() => {
           if (
             !isActive &&
@@ -1272,7 +1469,9 @@ export const CameraView: React.FC<CameraViewProps> = ({
           onPlay={handleVideoPlay}
           onPause={handleVideoPause}
           onEnded={handleVideoEnded}
-          className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
+          className={`absolute inset-0 w-full h-full transition-opacity duration-300 ${
+            inputMode === 'camera' ? 'object-contain' : 'object-cover'
+          } ${
             isActive ||
             inputMode === 'video'
               ? 'opacity-100'
@@ -1285,19 +1484,31 @@ export const CameraView: React.FC<CameraViewProps> = ({
         {/* -------------------------------------------------- */}
         {!isActive &&
           inputMode !== 'video' && (
-            <div className="flex flex-col items-center justify-center p-6 text-center select-none z-20">
-              <div className="w-20 h-20 rounded-full bg-white/10 text-white flex items-center justify-center border border-white/20 shadow-lg">
-                <Hand className="w-10 h-10 text-white -rotate-12 animate-bounce" />
+            <div className="flex flex-col items-center justify-center gap-3 p-6 text-center select-none z-20">
+              <div className="flex h-16 w-16 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white shadow-lg sm:h-20 sm:w-20">
+                <Hand className="h-8 w-8 -rotate-12 animate-bounce text-white motion-reduce:animate-none sm:h-10 sm:w-10" />
               </div>
 
-              <h3 className="mt-5 text-xl font-bold text-white">
+              <h3 className="break-keep text-2xl font-bold text-white sm:text-3xl">
                 화면을 눌러 수어 번역 시작하기
               </h3>
 
+              <p className="max-w-md break-keep text-base leading-relaxed text-white/90 sm:text-lg">
+                카메라가 켜지면 화면의 안내를 따라 주세요. 아래에 사용 방법이 있어요.
+              </p>
+
+              <span className="mt-1 inline-flex min-h-[48px] items-center gap-2 rounded-full bg-white px-6 py-3 text-base font-bold text-neutral-950 shadow-lg sm:text-lg">
+                <Camera aria-hidden="true" className="h-5 w-5" />
+                카메라 켜기
+              </span>
+
               {cameraError && (
-                <p className="mt-3 text-sm text-red-200 max-w-md">
-                  {cameraError}
-                </p>
+                <div className="max-w-md rounded-lg bg-red-500/85 px-4 py-3 text-left text-sm font-semibold leading-relaxed text-white sm:text-base">
+                  <p>{cameraError}</p>
+                  <p className="mt-1 font-normal text-white/90">
+                    브라우저의 카메라 권한을 허용했는지, 다른 프로그램이 카메라를 쓰고 있지 않은지 확인해 주세요.
+                  </p>
+                </div>
               )}
             </div>
           )}
@@ -1312,7 +1523,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
                 <div className="inline-flex min-w-0 items-center gap-2 rounded-lg bg-neutral-950/80 px-3 py-2 backdrop-blur-sm">
                   <span
                     aria-hidden="true"
-                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                    className={`h-2.5 w-2.5 shrink-0 rounded-full ${
                       cameraCaptureStatus === 'recording'
                         ? 'bg-red-400'
                         : calibrationStatus === 'ready'
@@ -1322,131 +1533,76 @@ export const CameraView: React.FC<CameraViewProps> = ({
                             : 'bg-white/60'
                     }`}
                   />
-                  <span className="truncate text-xs font-medium leading-4 text-white/90">
-                    {cameraCaptureStatus === 'recording'
-                      ? MANUAL_STOP_MODE
-                        ? '인식 중 · 끝나면 수어 종료'
-                        : '수어 인식 중'
-                      : isPredicting
-                        ? '번역 중'
-                        : calibrationStatus === 'preparing'
-                          ? '위치 맞추기'
-                          : calibrationStatus === 'calibrating'
-                            ? '보정 중'
-                            : calibrationStatus === 'unstable'
-                              ? '보정 필요'
-                              : '인식 대기'}
+                  <span className="truncate text-sm font-semibold leading-5 text-white sm:text-base">
+                    {statusText}
                   </span>
                 </div>
 
-                {cameraCaptureStatus === 'recording' && (
-                  <span className="shrink-0 rounded-lg bg-neutral-950/80 px-3 py-2 text-[11px] leading-4 tabular-nums text-white/70 backdrop-blur-sm">
-                    {sentFramesDisplay} 프레임
-                  </span>
-                )}
+                <span className="shrink-0 rounded-lg bg-neutral-950/80 px-3 py-2 text-xs font-medium leading-4 text-white/90 backdrop-blur-sm sm:text-sm">
+                  상반신 + 두 손
+                </span>
               </div>
 
-              {/* 상체 검출은 포즈 앞 99값으로 확인한다. 모서리 선은 구도 안내용이다. */}
-              {cameraCaptureStatus === 'idle' &&
-                !cameraError &&
-                !isPredicting && (
-                  <div className="pointer-events-none absolute inset-x-4 bottom-16 top-16 z-20 flex flex-col gap-5 sm:inset-x-6 sm:gap-6">
-                    {calibrationStatus !== 'ready' && (
-                      <div
-                        aria-hidden="true"
-                        className="flex min-h-0 flex-1 items-center justify-center"
-                      >
-                        <div className="relative h-full max-h-[440px] w-[88%] max-w-[560px]">
-                          <span className="absolute left-0 top-0 h-6 w-6 rounded-tl-md border-l border-t border-white/80" />
-                          <span className="absolute right-0 top-0 h-6 w-6 rounded-tr-md border-r border-t border-white/80" />
-                          <span className="absolute bottom-0 left-0 h-6 w-6 rounded-bl-md border-b border-l border-white/80" />
-                          <span className="absolute bottom-0 right-0 h-6 w-6 rounded-br-md border-b border-r border-white/80" />
+              {/* 구도 안내 전용: 상반신(머리~가슴)이 윤곽 안에 들어오도록 거리를 맞춘다. 실제 검출 판정은 하지 않는다. */}
+              {showPositionGuide && (
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-x-[8%] bottom-[5%] top-[13%] z-10 flex items-center justify-center"
+                >
+                  <div className="relative aspect-[402/491] h-full max-w-full">
+                    <svg
+                      viewBox={`0 0 ${UPPER_BODY_GUIDE.width} ${UPPER_BODY_GUIDE.height}`}
+                      className="absolute inset-0 h-full w-full"
+                      preserveAspectRatio="xMidYMid meet"
+                    >
+                      {/* 밝은 배경에서도 보이도록 어두운 테두리를 한 겹 깐다 */}
+                      <path
+                        d={UPPER_BODY_GUIDE.path}
+                        fill="none"
+                        stroke="rgba(0, 0, 0, 0.5)"
+                        strokeWidth={5}
+                        strokeLinejoin="round"
+                        vectorEffect="non-scaling-stroke"
+                      />
+                      <path
+                        d={UPPER_BODY_GUIDE.path}
+                        fill="rgba(255, 255, 255, 0.16)"
+                        stroke="rgba(255, 255, 255, 0.92)"
+                        strokeWidth={2}
+                        strokeLinejoin="round"
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    </svg>
+
+                    {/* 손이 안 보일 때만 손을 올릴 위치를 표시한다 */}
+                    {missingPart === 'hand' && (
+                      <>
+                        <div className="absolute left-[14%] top-[60%] flex h-14 w-14 animate-pulse items-center justify-center rounded-2xl border-2 border-dashed border-white/90 bg-neutral-950/40 motion-reduce:animate-none sm:h-16 sm:w-16">
+                          <Hand className="h-8 w-8 text-white sm:h-9 sm:w-9" />
                         </div>
-                      </div>
+                        <div className="absolute right-[14%] top-[60%] flex h-14 w-14 animate-pulse items-center justify-center rounded-2xl border-2 border-dashed border-white/90 bg-neutral-950/40 motion-reduce:animate-none sm:h-16 sm:w-16">
+                          <Hand className="h-8 w-8 -scale-x-100 text-white sm:h-9 sm:w-9" />
+                        </div>
+                      </>
                     )}
 
-                    <div className="mx-auto mt-auto w-full max-w-md shrink-0 rounded-xl border border-white/10 bg-neutral-950/90 px-4 py-3 backdrop-blur-sm">
-                      <div className="flex items-start justify-between gap-3">
-                        <div
-                          role="status"
-                          aria-live="polite"
-                          aria-atomic="true"
-                          className="min-w-0 flex-1"
-                        >
-                          <div className="flex items-center gap-2">
-                            <span
-                              aria-hidden="true"
-                              className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                                calibrationStatus === 'ready'
-                                  ? 'bg-emerald-400'
-                                  : calibrationStatus === 'unstable'
-                                    ? 'bg-amber-300'
-                                    : 'bg-white/60'
-                              }`}
-                            />
-                            <p className="text-[13px] font-medium leading-5 text-white">
-                              {calibrationStatus === 'ready'
-                                ? '보정 완료'
-                                : calibrationStatus === 'unstable'
-                                  ? '다시 보정해 주세요'
-                                  : calibrationStatus === 'calibrating'
-                                    ? '잠시 멈춰 주세요'
-                                    : '상체를 화면에 맞춰 주세요'}
-                            </p>
-                          </div>
-                          <p className="mt-1 text-xs leading-5 text-white/70">
-                            {calibrationStatus === 'ready'
-                              ? '이제 수어를 시작해 주세요.'
-                              : calibrationStatus === 'unstable'
-                                ? '움직임이 감지되었습니다. 잠시 멈춘 뒤 다시 시도해 주세요.'
-                                : calibrationStatus === 'calibrating'
-                                  ? '손과 상체를 편안하게 고정해 주세요.'
-                                  : '얼굴과 양손이 프레임 안에 보이게 맞춰 주세요.'}
-                          </p>
-                        </div>
+                    <span className="absolute bottom-[6%] left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-neutral-950/80 px-4 py-2 text-sm font-semibold leading-none text-white sm:text-base">
+                      {guideLabel}
+                    </span>
+                  </div>
+                </div>
+              )}
 
-                        {calibrationStatus === 'calibrating' && (
-                          <span
-                            aria-hidden="true"
-                            className="shrink-0 pt-0.5 text-xs leading-5 tabular-nums text-white/70"
-                          >
-                            {calibrationProgress}%
-                          </span>
-                        )}
-
-                        {(calibrationStatus === 'unstable' ||
-                        calibrationStatus === 'ready') && (
-                          <button
-                            type="button"
-                            aria-label="모션 캘리브레이션 다시 시작"
-                            onClick={(e) => {
-                              e.preventDefault()
-                              e.stopPropagation()
-                              handleRecalibrate()
-                            }}
-                            className="pointer-events-auto inline-flex min-h-[44px] shrink-0 items-center justify-center rounded-lg bg-white/10 px-3 text-xs font-medium text-white transition-colors hover:bg-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white motion-reduce:transition-none"
-                          >
-                            다시 보정
-                          </button>
-                        )}
-                      </div>
-
-                      {calibrationStatus === 'calibrating' && (
-                        <div
-                          role="progressbar"
-                          aria-label="모션 캘리브레이션 진행률"
-                          aria-valuemin={0}
-                          aria-valuemax={100}
-                          aria-valuenow={calibrationProgress}
-                          className="mt-3 h-0.5 overflow-hidden rounded-full bg-white/20"
-                        >
-                          <div
-                            className="h-full rounded-full bg-white/90 transition-[width] duration-150 motion-reduce:transition-none"
-                            style={{ width: `${calibrationProgress}%` }}
-                          />
-                        </div>
-                      )}
-                    </div>
+              {/* 준비 완료/인식 중에는 큰 가이드를 숨겨 수어 동작을 가리지 않는다. */}
+              {!cameraError &&
+                !isPredicting &&
+                (calibrationStatus === 'ready' || isRecording) && (
+                  <div className="pointer-events-none absolute inset-x-4 bottom-20 z-20 flex justify-center">
+                    <p className="rounded-full bg-neutral-950/80 px-4 py-2.5 text-center text-sm font-semibold leading-relaxed text-white backdrop-blur-sm sm:text-base">
+                      {isRecording
+                        ? '두 손을 화면 안에 유지해 주세요'
+                        : '손을 움직이면 인식이 시작돼요'}
+                    </p>
                   </div>
                 )}
 
@@ -1455,60 +1611,53 @@ export const CameraView: React.FC<CameraViewProps> = ({
               {/* ---------------------------------------------- */}
               {cameraError && (
                 <div className="absolute top-16 left-4 right-4 z-30 pointer-events-none">
-                  <div className="mx-auto max-w-md rounded-lg bg-red-500/80 backdrop-blur-md px-4 py-2 text-center text-xs font-semibold text-white">
+                  <div className="mx-auto max-w-md rounded-lg bg-red-500/85 px-4 py-3 text-center text-sm font-semibold leading-relaxed text-white backdrop-blur-md sm:text-base">
                     {cameraError}
                   </div>
                 </div>
               )}
 
-              {/* ---------------------------------------------- */}
-              {/* 수어 종료 버튼: 녹화 중에만 표시. 누르면 녹화 전체를 번역한다 */}
-              {/* ---------------------------------------------- */}
-              {cameraCaptureStatus === 'recording' && (
+              {/* 종료 버튼은 한 줄에 배치해 작은 화면에서도 겹치지 않게 한다. */}
+              <div className="absolute inset-x-4 bottom-4 z-50 flex items-center justify-end gap-3">
+                {cameraCaptureStatus === 'recording' && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      void handleManualStop()
+                    }}
+                    className="inline-flex min-h-[52px] flex-1 items-center justify-center gap-2 rounded-full border border-white/30 bg-red-500 px-5 py-3 text-white shadow-lg ring-4 ring-red-500/40 transition-colors hover:bg-red-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white motion-reduce:transition-none sm:flex-none sm:px-8"
+                  >
+                    <Square aria-hidden="true" className="h-5 w-5 fill-current" />
+                    <span className="text-base font-bold sm:text-lg">수어 종료</span>
+                  </button>
+                )}
+
                 <button
                   type="button"
-                  onClick={(e) => {
+                  onClick={async (e) => {
                     e.preventDefault()
                     e.stopPropagation()
-                    void handleManualStop()
+
+                    // AI 스트림이 살아 있는 경우에만 종료
+                    await endSignStream()
+
+                    // 그 다음 카메라 종료
+                    stopCameraStream()
+
+                    // 내부 상태 초기화
+                    resetStreamingState()
+
+                    // 부모의 카메라 상태 변경
+                    onToggleActive()
                   }}
-                  className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-red-500 hover:bg-red-600 px-5 py-2 rounded-full border border-white/30 text-white shadow-lg transition-colors cursor-pointer"
+                  className="inline-flex min-h-[48px] shrink-0 items-center justify-center gap-2 rounded-full border border-white/20 bg-black/70 px-4 py-2.5 text-white backdrop-blur-md transition-colors hover:bg-red-500/90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white motion-reduce:transition-none"
                 >
-                  <Square className="w-4 h-4 fill-current" />
-
-                  <span className="text-sm font-bold">수어 종료</span>
+                  <VideoOff aria-hidden="true" className="h-5 w-5" />
+                  <span className="text-sm font-bold sm:text-base">카메라 끄기</span>
                 </button>
-              )}
-
-              {/* ---------------------------------------------- */}
-              {/* 카메라 끄기 버튼 */}
-              {/* ---------------------------------------------- */}
-              <button
-                type="button"
-                onClick={async (e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-
-                  // AI 스트림이 살아 있는 경우에만 종료
-                  await endSignStream()
-
-                  // 그 다음 카메라 종료
-                  stopCameraStream()
-
-                  // 내부 상태 초기화
-                  resetStreamingState()
-
-                  // 부모의 카메라 상태 변경
-                  onToggleActive()
-                }}
-                className="absolute bottom-4 right-4 z-50 flex items-center gap-2 bg-black/70 hover:bg-red-500/90 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/20 text-white transition-colors cursor-pointer"
-              >
-                <VideoOff className="w-4 h-4" />
-
-                <span className="text-xs font-bold">
-                  카메라 끄기
-                </span>
-              </button>
+              </div>
             </>
           )}
 
@@ -1522,7 +1671,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
                 <div className="flex items-center gap-2 bg-black/50 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/10">
                   <Film className="w-4 h-4 text-brand-green" />
 
-                  <span className="text-xs font-bold text-white">
+                  <span className="text-sm font-bold text-white">
                     업로드 영상
                   </span>
                 </div>
@@ -1573,7 +1722,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
                   />
                 </div>
 
-                <span className="text-[10px] font-mono text-white whitespace-nowrap">
+                <span className="text-xs font-mono text-white whitespace-nowrap">
                   {Math.floor(videoCurrentTime)}
                   /
                   {Math.floor(videoDuration)}
@@ -1598,7 +1747,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
             >
               <Upload className="w-4 h-4" />
 
-              <span className="text-xs font-bold">
+              <span className="text-sm font-bold">
                 영상 업로드
               </span>
             </button>
@@ -1611,12 +1760,81 @@ export const CameraView: React.FC<CameraViewProps> = ({
           inputMode !== 'video' &&
           cameraError && (
             <div className="absolute bottom-16 left-4 right-4 z-30">
-              <div className="mx-auto max-w-md rounded-lg bg-red-500/80 backdrop-blur-md px-4 py-2 text-center text-xs font-semibold text-white">
+              <div className="mx-auto max-w-md rounded-lg bg-red-500/85 px-4 py-3 text-center text-sm font-semibold leading-relaxed text-white backdrop-blur-md sm:text-base">
                 {cameraError}
               </div>
             </div>
           )}
       </div>
+
+      {/* 안내는 영상 아래에 배치해 얼굴과 손을 가리지 않는다. */}
+      {isActive && inputMode === 'camera' && !cameraError && (
+        <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-950 px-5 py-5 text-white sm:px-7 sm:py-6">
+          <GuideSteps current={currentStep} />
+
+          <div className="mt-5 flex flex-col items-start justify-between gap-4 sm:flex-row">
+            <div
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              className="min-w-0 flex-1"
+            >
+              <h3 className="break-keep text-xl font-bold leading-snug sm:text-2xl">
+                {guideText.title}
+              </h3>
+              <p className="mt-2 break-keep text-base leading-relaxed text-white/90 sm:text-lg">
+                {guideText.description}
+              </p>
+            </div>
+
+            {canRecalibrate && (
+              <button
+                type="button"
+                aria-label="카메라 움직임 다시 맞추기"
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  handleRecalibrate()
+                }}
+                className={`inline-flex min-h-[48px] shrink-0 items-center justify-center rounded-lg px-5 text-base font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white motion-reduce:transition-none ${
+                  calibrationStatus === 'unstable'
+                    ? 'bg-amber-400 text-neutral-950 hover:bg-amber-300'
+                    : 'bg-white/10 text-white hover:bg-white/20'
+                }`}
+              >
+                다시 맞추기
+              </button>
+            )}
+          </div>
+
+          {calibrationStatus === 'calibrating' &&
+            !isRecording &&
+            !isPredicting && (
+              <div className="mt-5">
+                <div className="mb-2 flex items-center justify-between text-sm font-medium text-white/85 sm:text-base">
+                  <span>가만히 계세요</span>
+                  <span aria-hidden="true">{Math.round(progress)}%</span>
+                </div>
+                <div
+                  role="progressbar"
+                  aria-label="수어 인식 준비 진행률"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(progress)}
+                  className="h-2.5 overflow-hidden rounded-full bg-white/20"
+                >
+                  <div
+                    className="h-full rounded-full bg-white/90 transition-[width] duration-150 motion-reduce:transition-none"
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+        </div>
+      )}
+
+      {/* 카메라가 꺼져 있을 때는 처음 쓰는 사람을 위한 사용 방법을 보여준다. */}
+      {!isActive && inputMode !== 'video' && <HowToCard />}
 
       {/* ---------------------------------------------------- */}
       {/* 업로드 영상 파일명 */}
@@ -1627,7 +1845,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
             <div className="flex items-center gap-2 min-w-0">
               <Film className="w-4 h-4 text-brand-green shrink-0" />
 
-              <span className="text-sm text-neutral-600 truncate">
+              <span className="text-base text-neutral-700 truncate">
                 {videoFile.name}
               </span>
             </div>
@@ -1637,7 +1855,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
               onClick={() => {
                 clearVideoFile()
               }}
-              className="text-xs text-neutral-500 hover:text-red-500 transition-colors"
+              className="text-sm text-neutral-600 hover:text-red-500 transition-colors"
             >
               제거
             </button>
