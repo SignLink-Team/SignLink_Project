@@ -39,26 +39,35 @@ function splitSentences(text: string): string[] {
     .filter(Boolean);
 }
 
+// 일부 브라우저/웹뷰에는 Web Speech API가 없으므로 존재 여부를 먼저 확인한다.
+function getSpeechSynthesis(): SpeechSynthesis | null {
+  return typeof window !== 'undefined' && 'speechSynthesis' in window ? window.speechSynthesis : null;
+}
+
 export function useTTS() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voice, setVoice] = useState<SpeechSynthesisVoice | null>(null);
   const queueRef = useRef<string[]>([]);
 
   useEffect(() => {
+    const synth = getSpeechSynthesis();
+    if (!synth) return;
+
     const loadVoice = () => {
-      const best = pickBestKoreanVoice(window.speechSynthesis.getVoices());
+      const best = pickBestKoreanVoice(synth.getVoices());
       if (best) setVoice(best);
     };
     loadVoice();
-    window.speechSynthesis.onvoiceschanged = loadVoice;
+    synth.onvoiceschanged = loadVoice;
     return () => {
-      window.speechSynthesis.onvoiceschanged = null;
+      synth.onvoiceschanged = null;
     };
   }, []);
 
   const speakNext = useCallback(() => {
+    const synth = getSpeechSynthesis();
     const nextText = queueRef.current.shift();
-    if (!nextText) {
+    if (!synth || !nextText) {
       setIsSpeaking(false);
       return;
     }
@@ -68,11 +77,11 @@ export function useTTS() {
     utter.rate = 0.95;  // 병원 안내용이라 살짝 느리게
     utter.pitch = 1.0;
     utter.onend = speakNext; // 큐에 남은 다음 문장 이어서 재생
-    window.speechSynthesis.speak(utter);
+    synth.speak(utter);
   }, [voice]);
 
   const speak = useCallback((text: string) => {
-    window.speechSynthesis.cancel();
+    getSpeechSynthesis()?.cancel();
     const normalized = normalizeForSpeech(text);
     queueRef.current = splitSentences(normalized);
     setIsSpeaking(true);
@@ -81,7 +90,7 @@ export function useTTS() {
 
   const stop = useCallback(() => {
     queueRef.current = [];
-    window.speechSynthesis.cancel();
+    getSpeechSynthesis()?.cancel();
     setIsSpeaking(false);
   }, []);
 

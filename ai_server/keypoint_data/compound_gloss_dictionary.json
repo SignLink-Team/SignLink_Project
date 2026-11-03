@@ -1,0 +1,20 @@
+[
+  {"pattern": ["달다1", "소변1"], "canonical": "당뇨"},
+  {"pattern": ["달다1", "소변3"], "canonical": "당뇨"},
+  {"pattern": ["노랑1", "감기1"], "canonical": "가래"},
+  {"pattern": ["빨강1", "달다1"], "canonical": "혈당"},
+  {"pattern": ["병원1", "교사1"], "canonical": "의사"},
+  {"pattern": ["술1", "중독1"], "canonical": "알코올 중독"},
+  {"pattern": ["주무르다1", "바꾸다1"], "canonical": "물리 치료"},
+  {"pattern": ["예쁘다1", "수술1"], "canonical": "성형 수술"},
+  {"pattern": ["약1", "곳1"], "canonical": "약국"},
+  {"pattern": ["대변1", "안되다1"], "canonical": "변비"},
+  {"pattern": ["하양1"], "canonical": "치아"},
+  {"pattern": ["빨강1"], "canonical": "피"},
+  {"pattern": ["바꾸다1"], "canonical": "치료"},
+  {"pattern": ["약1", "전문1"], "canonical": "약사"},
+  {"pattern": ["눕다4"], "canonical": "입원"},
+  {"pattern": ["선언1"], "canonical": "진단"},
+  {"pattern": ["바꾸다1"], "canonical": "치료"},
+  {"pattern": ["먹다1", "여러가지3"], "canonical": "식단"}
+]

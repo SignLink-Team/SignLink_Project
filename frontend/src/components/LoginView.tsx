@@ -1,7 +1,8 @@
-import { FormEvent, useState } from 'react'
+import { FormEvent, ReactNode, useState } from 'react'
 import { motion } from 'motion/react'
-import { ArrowLeft, Eye, EyeOff, Heart, Lock, LogIn, Mail, ShieldCheck, User } from 'lucide-react'
+import { ArrowLeft, Eye, EyeOff, Heart, Lock, LogIn, LucideIcon, Mail, ShieldCheck, User } from 'lucide-react'
 import { ViewState } from '../types'
+import { getErrorMessage } from '../utils'
 
 interface LoginViewProps {
   mode: Extract<ViewState, 'login' | 'register'>
@@ -9,6 +10,23 @@ interface LoginViewProps {
   onRegister: (name: string, email: string, password: string) => Promise<void>
   onSwitchMode: () => void
   onBackToMain: () => void
+}
+
+const INPUT_BASE_CLASS =
+  'w-full py-2.5 bg-neutral-50/50 hover:bg-neutral-50 focus:bg-white border border-neutral-250 focus:border-secondary focus:ring-1 focus:ring-secondary rounded-lg text-sm font-medium outline-none transition-all duration-150 text-on-surface'
+const INPUT_CLASS = `${INPUT_BASE_CLASS} px-3.5`
+const PASSWORD_INPUT_CLASS = `${INPUT_BASE_CLASS} pl-3.5 pr-10`
+
+function FormField({ icon: Icon, label, children }: { icon: LucideIcon; label: string; children: ReactNode }) {
+  return (
+    <div className="space-y-1.5">
+      <label className="text-sm font-bold text-neutral-500 font-hyper flex items-center gap-1.5">
+        <Icon className="w-3.5 h-3.5 text-neutral-400" />
+        {label}
+      </label>
+      {children}
+    </div>
+  )
 }
 
 export const LoginView = ({
@@ -28,6 +46,7 @@ export const LoginView = ({
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
+    if (isSubmitting) return
     setErrorMessage(null)
     setIsSubmitting(true)
 
@@ -35,7 +54,7 @@ export const LoginView = ({
       if (isRegister) await onRegister(name.trim(), email.trim(), password)
       else await onLoginSuccess(email.trim(), password)
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : '인증 처리에 실패했습니다.')
+      setErrorMessage(getErrorMessage(err, '인증 처리에 실패했습니다.'))
     } finally {
       setIsSubmitting(false)
     }
@@ -80,42 +99,30 @@ export const LoginView = ({
             )}
 
             {isRegister && (
-              <div className="space-y-1.5">
-                <label className="text-sm font-bold text-neutral-500 font-hyper flex items-center gap-1.5">
-                  <User className="w-3.5 h-3.5 text-neutral-400" />
-                  이름
-                </label>
+              <FormField icon={User} label="이름">
                 <input
                   type="text"
                   required
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   placeholder="의료진 이름"
-                  className="w-full px-3.5 py-2.5 bg-neutral-50/50 hover:bg-neutral-50 focus:bg-white border border-neutral-250 focus:border-secondary focus:ring-1 focus:ring-secondary rounded-lg text-sm font-medium outline-none transition-all duration-150 text-on-surface"
+                  className={INPUT_CLASS}
                 />
-              </div>
+              </FormField>
             )}
 
-            <div className="space-y-1.5">
-              <label className="text-sm font-bold text-neutral-500 font-hyper flex items-center gap-1.5">
-                <Mail className="w-3.5 h-3.5 text-neutral-400" />
-                이메일
-              </label>
+            <FormField icon={Mail} label="이메일">
               <input
                 type="email"
                 required
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 placeholder="name@hospital.com"
-                className="w-full px-3.5 py-2.5 bg-neutral-50/50 hover:bg-neutral-50 focus:bg-white border border-neutral-250 focus:border-secondary focus:ring-1 focus:ring-secondary rounded-lg text-sm font-medium outline-none transition-all duration-150 text-on-surface"
+                className={INPUT_CLASS}
               />
-            </div>
+            </FormField>
 
-            <div className="space-y-1.5">
-              <label className="text-sm font-bold text-neutral-500 font-hyper flex items-center gap-1.5">
-                <Lock className="w-3.5 h-3.5 text-neutral-400" />
-                비밀번호
-              </label>
+            <FormField icon={Lock} label="비밀번호">
               <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
@@ -124,7 +131,7 @@ export const LoginView = ({
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   placeholder="8자 이상"
-                  className="w-full pl-3.5 pr-10 py-2.5 bg-neutral-50/50 hover:bg-neutral-50 focus:bg-white border border-neutral-250 focus:border-secondary focus:ring-1 focus:ring-secondary rounded-lg text-sm font-medium outline-none transition-all duration-150 text-on-surface"
+                  className={PASSWORD_INPUT_CLASS}
                 />
                 <button
                   type="button"
@@ -135,7 +142,7 @@ export const LoginView = ({
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
-            </div>
+            </FormField>
 
             <motion.button
               whileHover={{ scale: 1.01 }}

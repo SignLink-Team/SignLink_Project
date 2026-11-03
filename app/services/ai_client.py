@@ -141,19 +141,41 @@ class AIStreamClient:
 
         return data
 
-    async def add_frame(self, keypoints, frame_id: int):
+    async def add_frame(
+        self,
+        keypoints,
+        frame_id: int,
+        still: bool | None = None,
+        face: list[float] | None = None,
+        face_w: float | None = None,
+        face_h: float | None = None,
+    ):
         print(
-            f"[AI CLIENT] add_frame: id={frame_id}, values={len(keypoints)}",
+            f"[AI CLIENT] add_frame: id={frame_id}, values={len(keypoints)}, still={still}, face={len(face) if face else None}",
             flush=True,
         )
 
-        await self.send(
-            {
-                "type": "frame",
-                "keypoints": keypoints,
-                "frame_id": frame_id,
-            }
-        )
+        payload = {
+            "type": "frame",
+            "keypoints": keypoints,
+            "frame_id": frame_id,
+        }
+
+        # 프론트가 계산한 정지 여부가 있으면 그대로 전달한다.
+        # None이면(구버전 클라이언트 등) 필드를 아예 안 보내서
+        # AI 서버가 자체 motion gate로 폴백하게 한다.
+        if still is not None:
+            payload["still"] = still
+
+        # 비수지(NMS)용 얼굴 랜드마크. 없으면 필드를 보내지 않아 AI 서버가 NMS만 건너뛴다.
+        if face:
+            payload["face"] = face
+            if face_w is not None:
+                payload["face_w"] = face_w
+            if face_h is not None:
+                payload["face_h"] = face_h
+
+        await self.send(payload)
 
         print(
             "[AI CLIENT] add_frame complete",

@@ -1,9 +1,13 @@
+import { packFaceLandmarks } from './nms'
+
 type Landmark = { x: number; y: number; z: number }
 
 type HolisticResults = {
   poseLandmarks?: Landmark[]
   leftHandLandmarks?: Landmark[]
   rightHandLandmarks?: Landmark[]
+  // 비수지(NMS)용 얼굴 랜드마크. refineFaceLandmarks=false이면 468점.
+  faceLandmarks?: Landmark[]
 }
 
 declare global {
@@ -114,6 +118,8 @@ function extractNormalizedKeypoints(results: HolisticResults) {
 export class BrowserKeypointExtractor {
   private holistic: InstanceType<NonNullable<typeof window.Holistic>> | null = null
   private latest: number[] | null = null
+  // 비수지(NMS)용: 가장 최근 extract()에서 얻은 얼굴 랜드마크(468점 x xyz 평탄 배열)
+  private latestFace: number[] | null = null
 
   async init() {
     await loadHolisticScript()
@@ -130,14 +136,23 @@ export class BrowserKeypointExtractor {
     })
     this.holistic.onResults((results) => {
       this.latest = extractNormalizedKeypoints(results)
+      // 얼굴이 검출되지 않은 프레임은 null이 된다(이전 프레임 얼굴이 남지 않게).
+      // 서버는 null이면 직전 얼굴을 재사용한다.
+      this.latestFace = packFaceLandmarks(results.faceLandmarks)
     })
   }
 
   async extract(video: HTMLVideoElement) {
     if (!this.holistic) await this.init()
     this.latest = null
+    this.latestFace = null
     await this.holistic!.send({ image: video })
     return this.latest
+  }
+
+  /** 직전 extract() 프레임의 얼굴 랜드마크. 얼굴 미검출이면 null. */
+  getLastFaceLandmarks(): number[] | null {
+    return this.latestFace
   }
 
   async close() {

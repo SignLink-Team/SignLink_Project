@@ -9,15 +9,22 @@ interface UnkSolverProps {
   onSolveComplete: (resolvedText: string, confidence: number) => void
 }
 
+function isUnkGloss(gloss: string) {
+  const upper = gloss.toUpperCase()
+  return upper === 'UNK' || upper === '<UNK>'
+}
+
 export const UnkSolver = ({ glossResult, candidates, onSolveComplete }: UnkSolverProps) => {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
 
   const glosses = glossResult.split(/\s+/).filter(Boolean)
-  const unkCount = glosses.filter((gloss) => gloss.toUpperCase() === 'UNK' || gloss.toUpperCase() === '<UNK>').length
+  const unkCount = glosses.filter(isUnkGloss).length
 
   const handleConfirm = () => {
     if (selectedIndex === null) return
     const selected = candidates[selectedIndex]
+    // 후보 목록이 바뀌어 선택한 인덱스가 사라졌으면 확정하지 않는다.
+    if (!selected) return
     onSolveComplete(selected.text, selected.confidence)
   }
 
@@ -45,7 +52,7 @@ export const UnkSolver = ({ glossResult, candidates, onSolveComplete }: UnkSolve
 
         <div className="flex flex-wrap gap-2">
           {glosses.map((gloss, index) => {
-            const isUnk = gloss.toUpperCase() === 'UNK' || gloss.toUpperCase() === '<UNK>'
+            const isUnk = isUnkGloss(gloss)
             return (
               <span
                 key={`${gloss}-${index}`}

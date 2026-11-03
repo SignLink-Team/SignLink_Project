@@ -3,8 +3,9 @@ import { AnimatePresence, motion } from 'motion/react'
 import { AlertTriangle, Check, CheckCircle2, Copy, Edit3, History, Languages, RotateCcw, UserCheck, X } from 'lucide-react'
 import { TranslationCandidate } from '../types'
 import { UnkSolver } from './UnkSolver'
-import { useTTS } from '../hooks/useTTS';
-import { TTSToggle } from './TTSToggle';
+import { useTTS } from '../hooks/useTTS'
+import { TTSToggle } from './TTSToggle'
+import { copyToClipboard } from '../utils'
 
 interface TranslationResultProps {
   text: string | null
@@ -31,13 +32,25 @@ export const TranslationResult = ({
 }: TranslationResultProps) => {
   const [copied, setCopied] = useState(false)
   const [customText, setCustomText] = useState('')
+  const [ttsEnabled, setTtsEnabled] = useState(false)
+  const { speak, stop, isSpeaking } = useTTS()
 
   const hasText = !!text
   const hasUnk = hasText && /<?unk>?/i.test(`${text} ${glossResult}`)
 
+  // 자동 재생이 켜져 있으면 새 번역 문장이 올 때마다 읽어준다.
+  useEffect(() => {
+    if (ttsEnabled && text) {
+      speak(text)
+    }
+  }, [text, ttsEnabled])
+
+  // 화면을 벗어나면 재생 중인 음성을 멈춘다.
+  useEffect(() => stop, [stop])
+
   const handleCopy = () => {
     if (!text) return
-    navigator.clipboard?.writeText(text)
+    copyToClipboard(text)
     setCopied(true)
     window.setTimeout(() => setCopied(false), 2000)
   }
@@ -48,33 +61,20 @@ export const TranslationResult = ({
     setCustomText('')
   }
 
-  const { speak, stop, isSpeaking } = useTTS();
-  const [ttsEnabled, setTtsEnabled] = useState(false);
-
-  useEffect(() => {
-    if (ttsEnabled && text) {
-      speak(text);
-    }
-  }, [text, ttsEnabled]);
-
-  const handleToggle = () => {
-    setTtsEnabled(prev => {
-      const next = !prev;
-      if (!next) stop();
-      return next;
-    });
-  };
-
-  useEffect(() => {
-    return () => window.speechSynthesis.cancel();
-  }, []);
+  const handleToggleTts = () => {
+    setTtsEnabled((prev) => {
+      const next = !prev
+      if (!next) stop()
+      return next
+    })
+  }
 
   return (
     <div className="w-full mt-6">
       <div className="flex items-center gap-2 mb-3">
         <Languages className="w-5 h-5 text-brand-green" />
         <h2 className="text-lg font-bold font-sans text-on-surface">번역 결과</h2>
-        <TTSToggle enabled={ttsEnabled} onToggle={handleToggle} isSpeaking={isSpeaking} />
+        <TTSToggle enabled={ttsEnabled} onToggle={handleToggleTts} isSpeaking={isSpeaking} />
       </div>
 
       <div className="w-full bg-white border border-neutral-100 rounded-2xl p-6 md:p-8 shadow-xs relative min-h-[140px] flex flex-col justify-center transition-all duration-300">
