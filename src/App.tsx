@@ -101,6 +101,8 @@ export default function App() {
   const [activeConfidence, setActiveConfidence] = useState(0)
   const [lastLogId, setLastLogId] = useState<number | null>(null)
   const [cameraActive, setCameraActive] = useState(false)
+  // '다시 인식'을 누를 때마다 증가시켜 CameraView가 보정부터 다시 시작하게 한다.
+  const [retryRequestId, setRetryRequestId] = useState(0)
   const [isHelpOpen, setIsHelpOpen] = useState(false)
   const [isPredicting, setIsPredicting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -505,6 +507,7 @@ export default function App() {
     }
     clearDisplayedTranslation()
     setCameraActive(true)
+    setRetryRequestId((id) => id + 1)
   }
 
   const handleClearTranslation = () => {
@@ -583,6 +586,7 @@ export default function App() {
                     onWordBoundary={handleWordBoundary}
                     onStreamEnd={handleStreamEnd}
                     isPredicting={isPredicting}
+                    retryRequestId={retryRequestId}
                   />
 
                   <TranslationResult

@@ -51,6 +51,8 @@ interface CameraViewProps {
   onWordBoundary: () => Promise<void>
   onStreamEnd: () => Promise<void>
   isPredicting?: boolean
+  /** 값이 바뀔 때마다 보정부터 다시 시작한다(번역 결과의 '다시 인식'). 생략하면 사용하지 않는다. */
+  retryRequestId?: number
 }
 
 type InputMode = 'camera' | 'video'
@@ -99,6 +101,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
   onWordBoundary,
   onStreamEnd,
   isPredicting = false,
+  retryRequestId = 0,
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -133,6 +136,9 @@ export const CameraView: React.FC<CameraViewProps> = ({
   // RAF 루프는 시작 시점의 state를 캡처하므로 실패 여부는 Ref로도 유지한다.
   // 실패 후에는 사용자가 다시 보정을 누르기 전까지 샘플을 수집하지 않는다.
   const calibrationFailedRef = useRef(false)
+  // 한 문장을 마친 뒤 '다시 맞추기'를 누르기 전까지 새 수어 인식을 시작하지 않는다.
+  // (결과를 보는 동안 손을 움직여 새 녹화가 시작되고 결과가 지워지는 것을 막는다)
+  const sentenceDoneRef = useRef(false)
   const motionStartThresholdRef = useRef(MIN_START_THRESHOLD)
   const motionEndThresholdRef = useRef(MIN_END_THRESHOLD)
   const isCalibratedRef = useRef(false)
@@ -169,7 +175,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
 
   /** 보정 실패 안내가 떠 있지 않을 때만 '자리 맞추기' 상태로 되돌린다. */
   const markCalibrationPreparing = () => {
-    if (!calibrationFailedRef.current) {
+    if (!calibrationFailedRef.current && !sentenceDoneRef.current) {
       setCalibrationStatus('preparing')
     }
   }
@@ -180,6 +186,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
   const resetMotionCalibration = () => {
     resetCalibrationWindow()
     calibrationFailedRef.current = false
+    sentenceDoneRef.current = false
     motionStartThresholdRef.current = MIN_START_THRESHOLD
     motionEndThresholdRef.current = MIN_END_THRESHOLD
     isCalibratedRef.current = false
@@ -188,6 +195,21 @@ export const CameraView: React.FC<CameraViewProps> = ({
     missingFramesRef.current = 0
     setMissingPart(null)
     setCalibrationStatus('preparing')
+  }
+
+  // ------------------------------------------------------------
+  // 한 문장의 수어가 끝나면 보정 상태를 풀고 '번역 완료' 안내만 남긴다.
+  // 다음 수어는 '다시 맞추기'(handleRecalibrate)를 눌러 자리 맞추기부터 다시 시작한다.
+  // ------------------------------------------------------------
+  const lockUntilRecalibration = () => {
+    sentenceDoneRef.current = true
+    isCalibratedRef.current = false
+    prevKeypointsRef.current = null
+    startCountRef.current = 0
+    missingFramesRef.current = 0
+    resetCalibrationWindow()
+    setMissingPart(null)
+    setCalibrationStatus('done')
   }
 
   const handleRecalibrate = () => {
@@ -321,6 +343,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
     cooldownRef.current = MANUAL_STOP_COOLDOWN_FRAMES
 
     setCameraCaptureStatus('idle')
+    lockUntilRecalibration()
 
     console.log('[CAMERA] manual stop - close stream', {
       sentFrames: sentFramesRef.current,
@@ -526,6 +549,11 @@ export const CameraView: React.FC<CameraViewProps> = ({
   const processCalibrationFrame = (frame: AnalyzedFrame) => {
     const { hasPose, hasHand, hasPreviousFrame, prevHasPose, prevHasHand, score } = frame
 
+    // 문장을 마친 뒤에는 '다시 맞추기'를 누를 때까지 아무것도 하지 않는다.
+    if (sentenceDoneRef.current) {
+      return
+    }
+
     if (!hasPose || !hasHand) {
       // 상체가 사라지면 연속 샘플과 경과 시간을 모두 다시 센다.
       resetCalibrationWindow()
@@ -724,6 +752,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
     cooldownRef.current = POST_END_COOLDOWN_FRAMES
 
     setCameraCaptureStatus('idle')
+    lockUntilRecalibration()
 
     console.log('[CAMERA] sentence end - close stream', {
       lastCameraFrameId: cameraFrameId,
@@ -888,6 +917,20 @@ export const CameraView: React.FC<CameraViewProps> = ({
   }, [isActive, inputMode])
 
   // ------------------------------------------------------------
+  // 번역 결과의 '다시 인식': 수어가 끝난(번역 완료) 잠금을 풀고 자리 맞추기부터 다시 시작한다.
+  // 카메라가 꺼져 있었다면 부모가 카메라를 켜면서 처음부터 보정이 시작된다.
+  // ------------------------------------------------------------
+  const lastRetryRequestRef = useRef(retryRequestId)
+
+  useEffect(() => {
+    if (retryRequestId === lastRetryRequestRef.current) {
+      return
+    }
+    lastRetryRequestRef.current = retryRequestId
+    handleRecalibrate()
+  }, [retryRequestId])
+
+  // ------------------------------------------------------------
   // 업로드 영상 URL 정리
   // ------------------------------------------------------------
   useEffect(() => {
@@ -940,11 +983,16 @@ export const CameraView: React.FC<CameraViewProps> = ({
   const isRecording = cameraCaptureStatus === 'recording'
   const guideState = { isRecording, isPredicting, calibrationStatus, missingPart }
 
-  const showPositionGuide =
-    isCameraMode && !isRecording && !isPredicting && !cameraError && calibrationStatus !== 'ready'
+  // 상반신 윤곽 가이드는 카메라가 켜져 있는 동안 항상 같은 진하기(불투명도 100%)로 표시한다.
+  // 보정 단계(자리 맞추기/가만히 있기/다시 맞추기 필요)에서만 안내 문구와 손 위치 표시를 함께 보여준다.
+  const showPositionGuide = isCameraMode
+  const isPositionGuideOutlineOnly =
+    isRecording || isPredicting || calibrationStatus === 'ready' || calibrationStatus === 'done'
 
   const canRecalibrate =
-    !isRecording && !isPredicting && (calibrationStatus === 'unstable' || calibrationStatus === 'ready')
+    !isRecording &&
+    !isPredicting &&
+    (calibrationStatus === 'unstable' || calibrationStatus === 'ready' || calibrationStatus === 'done')
 
   const progress = Number.isFinite(calibrationProgress) ? Math.min(100, Math.max(0, calibrationProgress)) : 0
 
@@ -954,7 +1002,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
 
   const statusDotClass = isRecording
     ? 'bg-red-400'
-    : calibrationStatus === 'ready'
+    : calibrationStatus === 'ready' || calibrationStatus === 'done'
       ? 'bg-emerald-400'
       : calibrationStatus === 'unstable'
         ? 'bg-amber-300'
@@ -1057,9 +1105,9 @@ export const CameraView: React.FC<CameraViewProps> = ({
               </span>
             </div>
 
-            {showPositionGuide && <PositionGuideOverlay missingPart={missingPart} />}
+            {showPositionGuide && <PositionGuideOverlay missingPart={missingPart} outlineOnly={isPositionGuideOutlineOnly} />}
 
-            {/* 준비 완료/인식 중에는 큰 가이드를 숨겨 수어 동작을 가리지 않는다. */}
+            {/* 준비 완료/인식 중에는 가이드 안내 문구 대신 짧은 안내만 보여 수어 동작을 가리지 않는다. */}
             {!cameraError && !isPredicting && (calibrationStatus === 'ready' || isRecording) && (
               <div className="pointer-events-none absolute inset-x-4 bottom-20 z-20 flex justify-center">
                 <p className="rounded-full bg-neutral-950/80 px-4 py-2.5 text-center text-sm font-semibold leading-relaxed text-white backdrop-blur-sm sm:text-base">
@@ -1180,15 +1228,17 @@ export const CameraView: React.FC<CameraViewProps> = ({
             {canRecalibrate && (
               <button
                 type="button"
-                aria-label="카메라 움직임 다시 맞추기"
+                aria-label={calibrationStatus === 'done' ? '다음 수어 다시 하기' : '카메라 움직임 다시 맞추기'}
                 onClick={isolatedClick(handleRecalibrate)}
                 className={`inline-flex min-h-[48px] shrink-0 items-center justify-center rounded-lg px-5 text-base font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white motion-reduce:transition-none ${
                   calibrationStatus === 'unstable'
                     ? 'bg-amber-400 text-neutral-950 hover:bg-amber-300'
-                    : 'bg-white/10 text-white hover:bg-white/20'
+                    : calibrationStatus === 'done'
+                      ? 'bg-white text-neutral-950 hover:bg-white/90'
+                      : 'bg-white/10 text-white hover:bg-white/20'
                 }`}
               >
-                다시 맞추기
+                {calibrationStatus === 'done' ? '다시 수어하기' : '다시 맞추기'}
               </button>
             )}
           </div>

@@ -166,7 +166,7 @@ export const HistoryView = ({
           {logs.length > 0 && (
             <button
               onClick={handleClear}
-              className="flex items-center gap-1.5 px-3.5 py-2 border border-red-200 hover:bg-red-50 text-red-600 rounded-lg text-sm font-bold transition-all"
+              className="flex items-center gap-1.5 px-3.5 py-2 border border-red-200 bg-white hover:bg-red-50 text-red-600 rounded-lg text-sm font-bold transition-all"
             >
               <Trash2 className="w-4 h-4" />
               <span>전체 비우기</span>

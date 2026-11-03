@@ -11,7 +11,7 @@
   --color-secondary-dark: #004645;
   --color-brand-emerald: #0b5151; /* Dark emerald for the camera viewfinder card, as in screen */
   --color-brand-green: #0fc29e;
-  --color-bg-base: #f9f9ff;
+  --color-bg-base: #d9dfe8; /* 흰색 카드(번역 결과 등)와 구분되도록 한 단계 짙게 */
   --color-on-surface: #111c2d;
   --color-on-surface-variant: #424752;
 

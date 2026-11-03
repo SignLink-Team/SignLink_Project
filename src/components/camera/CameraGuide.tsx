@@ -2,7 +2,8 @@ import { Hand } from 'lucide-react'
 
 // CameraView의 사용 안내(단계 표시, 사용 방법 카드, 상반신 구도 가이드)와 안내 문구.
 
-export type MotionCalibrationStatus = 'preparing' | 'calibrating' | 'unstable' | 'ready'
+// done: 한 문장의 수어를 마친 상태. '다시 맞추기'를 누르기 전까지 새 수어 인식을 시작하지 않는다.
+export type MotionCalibrationStatus = 'preparing' | 'calibrating' | 'unstable' | 'ready' | 'done'
 /** 보정이 시작되지 못하는 이유(상반신/손 미검출) */
 export type MissingPart = 'body' | 'hand' | null
 
@@ -40,6 +41,10 @@ const CALIBRATION_GUIDE_TEXT: Record<MotionCalibrationStatus, GuideText> = {
     title: '이제 수어를 시작하세요!',
     description: '손을 움직이면 자동으로 인식이 시작돼요. 수어를 마치면 빨간 ‘수어 종료’ 버튼을 눌러 주세요.',
   },
+  done: {
+    title: '번역 결과를 확인해 주세요',
+    description: '다음 수어를 하려면 아래 ‘다시 수어하기’를 눌러 주세요. 자리 맞추기부터 다시 시작해요.',
+  },
 }
 
 // 보정이 시작되지 못하는 이유를 알면 그 이유를 직접 안내한다(조용히 기다리게 두지 않는다).
@@ -69,6 +74,7 @@ const STATUS_LABEL: Record<MotionCalibrationStatus, string> = {
   calibrating: '가만히 있기',
   unstable: '다시 맞추기 필요',
   ready: '수어 시작 가능',
+  done: '번역 완료',
 }
 
 const STATUS_STEP: Record<MotionCalibrationStatus, number> = {
@@ -76,6 +82,8 @@ const STATUS_STEP: Record<MotionCalibrationStatus, number> = {
   calibrating: 3,
   unstable: 3,
   ready: 4,
+  // 모든 단계를 마친 상태(단계 표시가 전부 완료로 보인다)
+  done: 5,
 }
 
 interface GuideState {
@@ -105,6 +113,7 @@ export function getStatusText(state: GuideState): string {
   const currentStep = getCurrentStep(state)
   if (state.isRecording) return `${currentStep}/4 수어 인식 중`
   if (state.isPredicting) return '번역 중'
+  if (state.calibrationStatus === 'done') return STATUS_LABEL.done
   return `${currentStep}/4 ${STATUS_LABEL[state.calibrationStatus]}`
 }
 
@@ -189,8 +198,17 @@ export function HowToCard() {
 const HAND_MARKER_CLASS =
   'absolute top-[60%] flex h-14 w-14 animate-pulse items-center justify-center rounded-2xl border-2 border-dashed border-white/90 bg-neutral-950/40 motion-reduce:animate-none sm:h-16 sm:w-16'
 
+interface PositionGuideOverlayProps {
+  missingPart: MissingPart
+  /**
+   * 보정 단계가 아닐 때(수어 시작 가능/인식 중/번역 중/번역 완료)는 윤곽만 표시하고,
+   * 수어 동작을 가리지 않도록 안내 문구와 손 위치 표시는 숨긴다.
+   */
+  outlineOnly?: boolean
+}
+
 /** 구도 안내 전용: 상반신(머리~가슴)이 윤곽 안에 들어오도록 거리를 맞춘다. 실제 검출 판정은 하지 않는다. */
-export function PositionGuideOverlay({ missingPart }: { missingPart: MissingPart }) {
+export function PositionGuideOverlay({ missingPart, outlineOnly = false }: PositionGuideOverlayProps) {
   // 영상 위 실루엣에 붙는 한 줄 안내
   const guideLabel = missingPart === 'hand' ? '두 손을 가슴 앞으로 올려 주세요' : '윤곽에 상반신을 맞춰 주세요'
 
@@ -225,7 +243,7 @@ export function PositionGuideOverlay({ missingPart }: { missingPart: MissingPart
         </svg>
 
         {/* 손이 안 보일 때만 손을 올릴 위치를 표시한다 */}
-        {missingPart === 'hand' && (
+        {!outlineOnly && missingPart === 'hand' && (
           <>
             <div className={`left-[14%] ${HAND_MARKER_CLASS}`}>
               <Hand className="h-8 w-8 text-white sm:h-9 sm:w-9" />
@@ -236,9 +254,11 @@ export function PositionGuideOverlay({ missingPart }: { missingPart: MissingPart
           </>
         )}
 
-        <span className="absolute bottom-[6%] left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-neutral-950/80 px-4 py-2 text-sm font-semibold leading-none text-white sm:text-base">
-          {guideLabel}
-        </span>
+        {!outlineOnly && (
+          <span className="absolute bottom-[6%] left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-neutral-950/80 px-4 py-2 text-sm font-semibold leading-none text-white sm:text-base">
+            {guideLabel}
+          </span>
+        )}
       </div>
     </div>
   )
