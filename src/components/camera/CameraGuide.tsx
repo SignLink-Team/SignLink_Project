@@ -1,4 +1,5 @@
-import { Hand } from 'lucide-react'
+import { Fragment } from 'react'
+import { ChevronRight, Hand } from 'lucide-react'
 
 // CameraView의 사용 안내(단계 표시, 사용 방법 카드, 상반신 구도 가이드)와 안내 문구.
 
@@ -133,39 +134,57 @@ const GUIDE_STEPS = [
 
 // current: 1~4는 진행 중인 단계, 5는 모든 단계 완료(번역 중)
 export function GuideSteps({ current }: { current: number }) {
+  // 모든 단계를 마치면(번역 중/번역 완료) 진행 방향 화살표는 숨긴다.
+  const allDone = current > GUIDE_STEPS.length
+
   return (
-    <ol aria-label="사용 단계" className="grid grid-cols-4 gap-2 sm:gap-3">
+    <ol aria-label="사용 단계" className="flex items-start gap-1 sm:gap-2">
       {GUIDE_STEPS.map((step, index) => {
         const number = index + 1
         const done = number < current
         const active = number === current
+        const showArrow = !allDone && number < GUIDE_STEPS.length
 
         return (
-          <li
-            key={step.title}
-            aria-current={active ? 'step' : undefined}
-            className="flex flex-col items-center gap-1.5 text-center"
-          >
-            <span
-              className={`flex h-9 w-9 items-center justify-center rounded-full text-base font-bold sm:h-10 sm:w-10 sm:text-lg ${
-                done
-                  ? 'bg-emerald-400 text-neutral-950'
-                  : active
-                    ? 'bg-white text-neutral-950 ring-4 ring-white/30'
-                    : 'bg-white/10 text-white/60'
-              }`}
+          <Fragment key={step.title}>
+            <li
+              aria-current={active ? 'step' : undefined}
+              className="flex min-w-0 flex-1 flex-col items-center gap-1.5 text-center"
             >
-              <span aria-hidden="true">{done ? '✓' : number}</span>
-              <span className="sr-only">{done ? `${number}단계 완료` : `${number}단계`}</span>
-            </span>
-            <span
-              className={`break-keep text-sm leading-snug sm:text-base ${
-                active ? 'font-bold text-white' : done ? 'font-medium text-emerald-200' : 'text-white/60'
-              }`}
-            >
-              {step.title}
-            </span>
-          </li>
+              {/* 지금 단계는 불이 들어온 것처럼 밝게 빛나고, 지난 단계는 초록색으로 켜진 채 남는다. */}
+              <span
+                className={`flex h-9 w-9 items-center justify-center rounded-full text-base font-bold transition-all duration-500 motion-reduce:transition-none sm:h-10 sm:w-10 sm:text-lg ${
+                  done
+                    ? 'bg-emerald-400 text-neutral-950 shadow-[0_0_12px_2px_rgba(52,211,153,0.45)]'
+                    : active
+                      ? 'bg-white text-neutral-950 ring-4 ring-white/30 shadow-[0_0_18px_6px_rgba(255,255,255,0.5)]'
+                      : 'bg-white/10 text-white/60'
+                }`}
+              >
+                <span aria-hidden="true">{done ? '✓' : number}</span>
+                <span className="sr-only">{done ? `${number}단계 완료` : `${number}단계`}</span>
+              </span>
+              <span
+                className={`break-keep text-sm leading-snug transition-colors duration-500 motion-reduce:transition-none sm:text-base ${
+                  active ? 'font-bold text-white' : done ? 'font-medium text-emerald-200' : 'text-white/60'
+                }`}
+              >
+                {step.title}
+              </span>
+            </li>
+
+            {/* 단계 사이 화살표. 앞 단계를 마치면 초록색으로 켜진다. 원의 가운데 높이에 맞춘다. */}
+            {showArrow && (
+              <li aria-hidden="true" className="mt-2.5 shrink-0 sm:mt-3">
+                <ChevronRight
+                  className={`h-5 w-5 transition-colors duration-500 motion-reduce:transition-none ${
+                    done ? 'text-emerald-300' : 'text-white/25'
+                  }`}
+                  strokeWidth={3}
+                />
+              </li>
+            )}
+          </Fragment>
         )
       })}
     </ol>

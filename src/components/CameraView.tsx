@@ -1215,9 +1215,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
       {/* 안내는 영상 아래에 배치해 얼굴과 손을 가리지 않는다. */}
       {isCameraMode && !cameraError && (
         <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-950 px-5 py-5 text-white sm:px-7 sm:py-6">
-          <GuideSteps current={currentStep} />
-
-          <div className="mt-5 flex flex-col items-start justify-between gap-4 sm:flex-row">
+          <div className="flex flex-col items-start justify-between gap-4 sm:flex-row">
             <div role="status" aria-live="polite" aria-atomic="true" className="min-w-0 flex-1">
               <h3 className="break-keep text-xl font-bold leading-snug sm:text-2xl">{guideText.title}</h3>
               <p className="mt-2 break-keep text-base leading-relaxed text-white/90 sm:text-lg">
@@ -1264,6 +1262,11 @@ export const CameraView: React.FC<CameraViewProps> = ({
               </div>
             </div>
           )}
+
+          {/* 단계 표시는 설명 아래에 둔다. */}
+          <div className="mt-5 border-t border-white/10 pt-5">
+            <GuideSteps current={currentStep} />
+          </div>
         </div>
       )}
 
