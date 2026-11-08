@@ -8,6 +8,22 @@ const NETWORK_ERROR_MESSAGE = '백엔드 서버에 연결할 수 없습니다. �
 const DEFAULT_ERROR_MESSAGE = '요청 처리에 실패했습니다.'
 const INVALID_RESPONSE_MESSAGE = '서버 응답을 해석할 수 없습니다.'
 
+/**
+ * API 요청 실패. message는 기존과 같고, 화면에서 상황별 안내를 고를 수 있도록
+ * HTTP 상태 코드(서버 연결 실패는 0)와 입력 검증 실패 필드를 함께 담는다.
+ */
+export class ApiError extends Error {
+  status: number
+  fields: string[]
+
+  constructor(message: string, status: number, fields: string[] = []) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.fields = fields
+  }
+}
+
 function getToken() {
   return safeStorage.get(TOKEN_STORAGE_KEY)
 }
@@ -40,6 +56,15 @@ function extractErrorDetail(data: unknown): string {
   return DEFAULT_ERROR_MESSAGE
 }
 
+/** 입력 검증 오류(detail: {loc}[])에서 문제가 된 필드 이름을 뽑는다. 예: ['body', 'email'] → 'email' */
+function extractErrorFields(data: unknown): string[] {
+  const detail = (data as { detail?: unknown } | null | undefined)?.detail
+  if (!Array.isArray(detail)) return []
+  return detail
+    .map((item: { loc?: unknown }) => (Array.isArray(item?.loc) ? String(item.loc[item.loc.length - 1]) : ''))
+    .filter(Boolean)
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers)
   headers.set('Content-Type', 'application/json')
@@ -51,13 +76,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   try {
     response = await fetch(`${API_BASE}${path}`, { ...options, headers })
   } catch {
-    throw new Error(NETWORK_ERROR_MESSAGE)
+    throw new ApiError(NETWORK_ERROR_MESSAGE, 0)
   }
 
   const data = parseJson(await response.text())
 
-  if (!response.ok) throw new Error(extractErrorDetail(data))
-  if (data === undefined) throw new Error(INVALID_RESPONSE_MESSAGE)
+  if (!response.ok) throw new ApiError(extractErrorDetail(data), response.status, extractErrorFields(data))
+  if (data === undefined) throw new ApiError(INVALID_RESPONSE_MESSAGE, response.status)
 
   return data as T
 }
