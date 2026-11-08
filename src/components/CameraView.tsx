@@ -53,6 +53,8 @@ interface CameraViewProps {
   isPredicting?: boolean
   /** 값이 바뀔 때마다 보정부터 다시 시작한다(번역 결과의 '다시 인식'). 생략하면 사용하지 않는다. */
   retryRequestId?: number
+  /** 카메라 화면 좌우 반전. 화면 표시만 뒤집으므로 키포인트 추출과 인식에는 영향이 없다. */
+  isMirrored?: boolean
 }
 
 type InputMode = 'camera' | 'video'
@@ -102,6 +104,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
   onStreamEnd,
   isPredicting = false,
   retryRequestId = 0,
+  isMirrored = false,
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -983,11 +986,6 @@ export const CameraView: React.FC<CameraViewProps> = ({
   const isRecording = cameraCaptureStatus === 'recording'
   const guideState = { isRecording, isPredicting, calibrationStatus, missingPart }
 
-  // 상반신 윤곽 가이드는 카메라가 켜져 있는 동안 항상 같은 진하기(불투명도 100%)로 표시한다.
-  // 보정 단계(자리 맞추기/가만히 있기/다시 맞추기 필요)에서만 안내 문구와 손 위치 표시를 함께 보여준다.
-  const showPositionGuide = isCameraMode
-  const isPositionGuideOutlineOnly =
-    isRecording || isPredicting || calibrationStatus === 'ready' || calibrationStatus === 'done'
 
   const canRecalibrate =
     !isRecording &&
@@ -1054,7 +1052,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
           onPause={() => setIsVideoPaused(true)}
           onEnded={() => setIsVideoPaused(true)}
           className={`absolute inset-0 w-full h-full transition-opacity duration-300 ${
-            inputMode === 'camera' ? 'object-contain' : 'object-cover'
+            inputMode === 'camera' ? `object-contain${isMirrored ? ' -scale-x-100' : ''}` : 'object-cover'
           } ${isActive || inputMode === 'video' ? 'opacity-100' : 'hidden'}`}
         />
 
@@ -1105,7 +1103,8 @@ export const CameraView: React.FC<CameraViewProps> = ({
               </span>
             </div>
 
-            {showPositionGuide && <PositionGuideOverlay missingPart={missingPart} outlineOnly={isPositionGuideOutlineOnly} />}
+            {/* 상반신 가이드는 카메라가 켜져 있는 동안 항상 표시한다. */}
+            <PositionGuideOverlay state={guideState} />
 
             {/* 준비 완료/인식 중에는 가이드 안내 문구 대신 짧은 안내만 보여 수어 동작을 가리지 않는다. */}
             {!cameraError && !isPredicting && (calibrationStatus === 'ready' || isRecording) && (

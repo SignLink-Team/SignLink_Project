@@ -13,14 +13,13 @@ interface GuideText {
   description: string
 }
 
-// 상반신(머리~가슴) 구도 가이드 실루엣.
-// 업로드한 가이드 이미지에서 윤곽만 벡터로 옮긴 것이다(모서리 꺾쇠와 배경은 제외).
-// viewBox는 width x height, path는 머리/목과 어깨 두 덩어리로 이루어져 있다.
+// 상반신(머리~가슴) 구도 가이드. 얼굴 타원과 어깨선만 그려 몸을 가리지 않는다.
 const UPPER_BODY_GUIDE = {
   width: 402,
   height: 491,
-  path:
-    'M3.0 406.0 L3.0 430.0 L4.0 431.0 L4.0 435.0 L21.0 447.0 L40.0 457.0 L78.0 471.0 L81.0 471.0 L102.0 477.0 L106.0 477.0 L107.0 478.0 L111.0 478.0 L117.0 480.0 L122.0 480.0 L123.0 481.0 L128.0 481.0 L129.0 482.0 L136.0 482.0 L137.0 483.0 L143.0 483.0 L144.0 484.0 L153.0 484.0 L154.0 485.0 L166.0 485.0 L167.0 486.0 L213.0 487.0 L214.0 486.0 L247.0 485.0 L248.0 484.0 L257.0 484.0 L258.0 483.0 L264.0 483.0 L265.0 482.0 L272.0 482.0 L273.0 481.0 L284.0 480.0 L285.0 479.0 L299.0 477.0 L304.0 475.0 L308.0 475.0 L344.0 464.0 L359.0 457.0 L361.0 457.0 L375.0 450.0 L397.0 435.0 L397.0 431.0 L398.0 430.0 L398.0 406.0 L397.0 405.0 L397.0 396.0 L396.0 395.0 L396.0 389.0 L395.0 388.0 L392.0 371.0 L386.0 354.0 L377.0 336.0 L366.0 320.0 L341.0 294.0 L330.0 286.0 L313.0 277.0 L311.0 277.0 L306.0 274.0 L291.0 269.0 L288.0 267.0 L283.0 266.0 L267.0 258.0 L264.0 258.0 L259.0 265.0 L239.0 284.0 L224.0 292.0 L214.0 295.0 L209.0 295.0 L208.0 296.0 L193.0 296.0 L192.0 295.0 L187.0 295.0 L177.0 292.0 L167.0 287.0 L158.0 281.0 L142.0 265.0 L137.0 258.0 L134.0 258.0 L125.0 263.0 L95.0 274.0 L76.0 283.0 L60.0 294.0 L39.0 315.0 L24.0 336.0 L15.0 354.0 L9.0 371.0 L9.0 374.0 L6.0 383.0 L5.0 395.0 L4.0 396.0 L4.0 405.0 Z M187.0 3.0 L186.0 4.0 L180.0 4.0 L179.0 5.0 L170.0 6.0 L156.0 11.0 L146.0 16.0 L136.0 23.0 L120.0 40.0 L115.0 48.0 L108.0 64.0 L108.0 67.0 L105.0 76.0 L105.0 81.0 L104.0 82.0 L103.0 112.0 L100.0 114.0 L95.0 120.0 L95.0 123.0 L94.0 124.0 L94.0 135.0 L95.0 136.0 L97.0 146.0 L101.0 154.0 L107.0 161.0 L109.0 171.0 L114.0 186.0 L125.0 207.0 L131.0 215.0 L143.0 227.0 L159.0 238.0 L159.0 259.0 L162.0 262.0 L177.0 270.0 L190.0 274.0 L199.0 274.0 L201.0 275.0 L202.0 274.0 L211.0 274.0 L224.0 270.0 L239.0 262.0 L242.0 259.0 L242.0 238.0 L258.0 227.0 L270.0 215.0 L279.0 202.0 L287.0 186.0 L292.0 171.0 L294.0 161.0 L298.0 157.0 L304.0 146.0 L306.0 139.0 L306.0 135.0 L307.0 134.0 L307.0 124.0 L305.0 118.0 L298.0 112.0 L297.0 82.0 L296.0 81.0 L296.0 76.0 L295.0 75.0 L293.0 64.0 L286.0 48.0 L278.0 36.0 L261.0 20.0 L255.0 16.0 L240.0 9.0 L231.0 6.0 L227.0 6.0 L221.0 4.0 L215.0 4.0 L214.0 3.0 Z',
+  head: { cx: 201, cy: 125, rx: 92, ry: 118 },
+  shoulders:
+    'M 160 234 C 160 258 150 268 128 276 C 62 298 8 330 4 486 M 242 234 C 242 258 252 268 274 276 C 340 298 394 330 398 486',
 }
 
 // 구도 가이드는 안내용이다. 실제 얼굴/상체/양손 검출 판정과 모션 게이트는 변경하지 않는다.
@@ -215,54 +214,66 @@ export function HowToCard() {
 }
 
 const HAND_MARKER_CLASS =
-  'absolute top-[60%] flex h-14 w-14 animate-pulse items-center justify-center rounded-2xl border-2 border-dashed border-white/90 bg-neutral-950/40 motion-reduce:animate-none sm:h-16 sm:w-16'
+  'absolute top-[38%] flex h-14 w-14 animate-pulse items-center justify-center rounded-2xl border-2 border-dashed border-white/90 bg-neutral-950/40 motion-reduce:animate-none sm:h-16 sm:w-16'
 
-interface PositionGuideOverlayProps {
-  missingPart: MissingPart
-  /**
-   * 보정 단계가 아닐 때(수어 시작 가능/인식 중/번역 중/번역 완료)는 윤곽만 표시하고,
-   * 수어 동작을 가리지 않도록 안내 문구와 손 위치 표시는 숨긴다.
-   */
-  outlineOnly?: boolean
+/** 상태별 윤곽 선 종류와 영상 위 한 줄 안내. 안내가 없으면(수어 중 등) 윤곽만 표시한다. */
+function getPositionGuideAppearance({ isRecording, isPredicting, calibrationStatus, missingPart }: GuideState) {
+  if (isPredicting || isRecording || calibrationStatus === 'done' || calibrationStatus === 'ready') {
+    return { dashed: false, label: null }
+  }
+  if (calibrationStatus === 'calibrating') return { dashed: false, label: '좋아요, 그대로 계세요' }
+  if (calibrationStatus === 'unstable') return { dashed: true, label: '움직임이 감지되었어요' }
+  return {
+    dashed: true,
+    label: missingPart === 'hand' ? '두 손을 가슴 앞으로 올려 주세요' : '얼굴과 어깨를 선에 맞춰 주세요',
+  }
 }
 
-/** 구도 안내 전용: 상반신(머리~가슴)이 윤곽 안에 들어오도록 거리를 맞춘다. 실제 검출 판정은 하지 않는다. */
-export function PositionGuideOverlay({ missingPart, outlineOnly = false }: PositionGuideOverlayProps) {
-  // 영상 위 실루엣에 붙는 한 줄 안내
-  const guideLabel = missingPart === 'hand' ? '두 손을 가슴 앞으로 올려 주세요' : '윤곽에 상반신을 맞춰 주세요'
+/**
+ * 구도 안내 전용: 얼굴과 어깨가 선에 맞도록 거리를 맞춘다. 실제 검출 판정은 하지 않는다.
+ * 색은 항상 흰색이다. 맞추는 중이거나 다시 맞춰야 하면 점선, 그 외에는 실선으로 표시한다.
+ */
+export function PositionGuideOverlay({ state }: { state: GuideState }) {
+  const { dashed, label } = getPositionGuideAppearance(state)
+  const { head, shoulders, width, height } = UPPER_BODY_GUIDE
+  // 밝은 배경에서도 보이도록 어두운 선을 아래에 한 겹 깐다
+  const layers = [
+    { className: 'stroke-black/50', strokeWidth: 5, strokeDasharray: undefined },
+    {
+      className: 'stroke-white',
+      strokeWidth: 3,
+      strokeDasharray: dashed ? '10 8' : undefined,
+    },
+  ]
 
   return (
     <div
       aria-hidden="true"
-      className="pointer-events-none absolute inset-x-[8%] bottom-[5%] top-[13%] z-10 flex items-center justify-center"
+      className="pointer-events-none absolute inset-x-[4%] bottom-0 top-[7%] z-10 flex items-center justify-center"
     >
       <div className="relative aspect-[402/491] h-full max-w-full">
         <svg
-          viewBox={`0 0 ${UPPER_BODY_GUIDE.width} ${UPPER_BODY_GUIDE.height}`}
+          viewBox={`0 0 ${width} ${height}`}
           className="absolute inset-0 h-full w-full"
           preserveAspectRatio="xMidYMid meet"
         >
-          {/* 밝은 배경에서도 보이도록 어두운 테두리를 한 겹 깐다 */}
-          <path
-            d={UPPER_BODY_GUIDE.path}
-            fill="none"
-            stroke="rgba(0, 0, 0, 0.5)"
-            strokeWidth={5}
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-          />
-          <path
-            d={UPPER_BODY_GUIDE.path}
-            fill="rgba(255, 255, 255, 0.16)"
-            stroke="rgba(255, 255, 255, 0.92)"
-            strokeWidth={2}
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-          />
+          {layers.map((layer) => (
+            <g
+              key={layer.strokeWidth}
+              className={layer.className}
+              fill="none"
+              strokeWidth={layer.strokeWidth}
+              strokeDasharray={layer.strokeDasharray}
+              strokeLinecap="round"
+            >
+              <ellipse {...head} vectorEffect="non-scaling-stroke" />
+              <path d={shoulders} vectorEffect="non-scaling-stroke" />
+            </g>
+          ))}
         </svg>
 
         {/* 손이 안 보일 때만 손을 올릴 위치를 표시한다 */}
-        {!outlineOnly && missingPart === 'hand' && (
+        {state.calibrationStatus === 'preparing' && !state.isRecording && !state.isPredicting && state.missingPart === 'hand' && (
           <>
             <div className={`left-[14%] ${HAND_MARKER_CLASS}`}>
               <Hand className="h-8 w-8 text-white sm:h-9 sm:w-9" />
@@ -273,9 +284,9 @@ export function PositionGuideOverlay({ missingPart, outlineOnly = false }: Posit
           </>
         )}
 
-        {!outlineOnly && (
-          <span className="absolute bottom-[6%] left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-neutral-950/80 px-4 py-2 text-sm font-semibold leading-none text-white sm:text-base">
-            {guideLabel}
+        {label && (
+          <span className="absolute bottom-[26%] left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-neutral-950/80 px-4 py-2 text-sm font-semibold leading-none text-white sm:text-base">
+            {label}
           </span>
         )}
       </div>
