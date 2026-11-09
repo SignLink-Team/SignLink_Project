@@ -2,6 +2,9 @@ export type ViewState = 'main' | 'history' | 'login' | 'register'
 
 export type UserRole = 'doctor' | 'patient'
 
+/** 카메라 상반신 가이드 모양. basic: 얼굴 타원 + 어깨선, silhouette: 얼굴부터 어깨까지 이어진 윤곽 */
+export type CameraGuideVariant = 'basic' | 'silhouette'
+
 export interface TranslationCandidate {
   text: string
   confidence: number

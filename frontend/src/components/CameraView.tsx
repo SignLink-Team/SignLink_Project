@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Camera, Film, Hand, Pause, Play, Square, Upload, VideoOff, X } from 'lucide-react'
 import { BrowserKeypointExtractor } from '../keypointExtractor'
 import { FaceFrame } from '../nms'
+import { CameraGuideVariant } from '../types'
 import { getErrorMessage } from '../utils'
 import {
   GuideSteps,
@@ -53,6 +54,10 @@ interface CameraViewProps {
   isPredicting?: boolean
   /** 값이 바뀔 때마다 보정부터 다시 시작한다(번역 결과의 '다시 인식'). 생략하면 사용하지 않는다. */
   retryRequestId?: number
+  /** 카메라 화면 좌우 반전. 화면 표시만 뒤집으므로 키포인트 추출과 인식에는 영향이 없다. */
+  isMirrored?: boolean
+  /** 상반신 가이드 모양 */
+  guideVariant?: CameraGuideVariant
 }
 
 type InputMode = 'camera' | 'video'
@@ -102,6 +107,8 @@ export const CameraView: React.FC<CameraViewProps> = ({
   onStreamEnd,
   isPredicting = false,
   retryRequestId = 0,
+  isMirrored = false,
+  guideVariant = 'basic',
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -983,11 +990,6 @@ export const CameraView: React.FC<CameraViewProps> = ({
   const isRecording = cameraCaptureStatus === 'recording'
   const guideState = { isRecording, isPredicting, calibrationStatus, missingPart }
 
-  // 상반신 윤곽 가이드는 카메라가 켜져 있는 동안 항상 같은 진하기(불투명도 100%)로 표시한다.
-  // 보정 단계(자리 맞추기/가만히 있기/다시 맞추기 필요)에서만 안내 문구와 손 위치 표시를 함께 보여준다.
-  const showPositionGuide = isCameraMode
-  const isPositionGuideOutlineOnly =
-    isRecording || isPredicting || calibrationStatus === 'ready' || calibrationStatus === 'done'
 
   const canRecalibrate =
     !isRecording &&
@@ -1054,7 +1056,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
           onPause={() => setIsVideoPaused(true)}
           onEnded={() => setIsVideoPaused(true)}
           className={`absolute inset-0 w-full h-full transition-opacity duration-300 ${
-            inputMode === 'camera' ? 'object-contain' : 'object-cover'
+            inputMode === 'camera' ? `object-contain${isMirrored ? ' -scale-x-100' : ''}` : 'object-cover'
           } ${isActive || inputMode === 'video' ? 'opacity-100' : 'hidden'}`}
         />
 
@@ -1105,7 +1107,8 @@ export const CameraView: React.FC<CameraViewProps> = ({
               </span>
             </div>
 
-            {showPositionGuide && <PositionGuideOverlay missingPart={missingPart} outlineOnly={isPositionGuideOutlineOnly} />}
+            {/* 상반신 가이드는 카메라가 켜져 있는 동안 항상 표시한다. */}
+            <PositionGuideOverlay state={guideState} variant={guideVariant} />
 
             {/* 준비 완료/인식 중에는 가이드 안내 문구 대신 짧은 안내만 보여 수어 동작을 가리지 않는다. */}
             {!cameraError && !isPredicting && (calibrationStatus === 'ready' || isRecording) && (
@@ -1215,9 +1218,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
       {/* 안내는 영상 아래에 배치해 얼굴과 손을 가리지 않는다. */}
       {isCameraMode && !cameraError && (
         <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-950 px-5 py-5 text-white sm:px-7 sm:py-6">
-          <GuideSteps current={currentStep} />
-
-          <div className="mt-5 flex flex-col items-start justify-between gap-4 sm:flex-row">
+          <div className="flex flex-col items-start justify-between gap-4 sm:flex-row">
             <div role="status" aria-live="polite" aria-atomic="true" className="min-w-0 flex-1">
               <h3 className="break-keep text-xl font-bold leading-snug sm:text-2xl">{guideText.title}</h3>
               <p className="mt-2 break-keep text-base leading-relaxed text-white/90 sm:text-lg">
@@ -1264,6 +1265,11 @@ export const CameraView: React.FC<CameraViewProps> = ({
               </div>
             </div>
           )}
+
+          {/* 단계 표시는 설명 아래에 둔다. */}
+          <div className="mt-5 border-t border-white/10 pt-5">
+            <GuideSteps current={currentStep} />
+          </div>
         </div>
       )}
 

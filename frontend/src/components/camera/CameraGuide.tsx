@@ -1,4 +1,6 @@
-import { Hand } from 'lucide-react'
+import { Fragment } from 'react'
+import { ChevronRight, Hand } from 'lucide-react'
+import { CameraGuideVariant } from '../../types'
 
 // CameraView의 사용 안내(단계 표시, 사용 방법 카드, 상반신 구도 가이드)와 안내 문구.
 
@@ -12,14 +14,72 @@ interface GuideText {
   description: string
 }
 
-// 상반신(머리~가슴) 구도 가이드 실루엣.
-// 업로드한 가이드 이미지에서 윤곽만 벡터로 옮긴 것이다(모서리 꺾쇠와 배경은 제외).
-// viewBox는 width x height, path는 머리/목과 어깨 두 덩어리로 이루어져 있다.
-const UPPER_BODY_GUIDE = {
-  width: 402,
-  height: 491,
-  path:
-    'M3.0 406.0 L3.0 430.0 L4.0 431.0 L4.0 435.0 L21.0 447.0 L40.0 457.0 L78.0 471.0 L81.0 471.0 L102.0 477.0 L106.0 477.0 L107.0 478.0 L111.0 478.0 L117.0 480.0 L122.0 480.0 L123.0 481.0 L128.0 481.0 L129.0 482.0 L136.0 482.0 L137.0 483.0 L143.0 483.0 L144.0 484.0 L153.0 484.0 L154.0 485.0 L166.0 485.0 L167.0 486.0 L213.0 487.0 L214.0 486.0 L247.0 485.0 L248.0 484.0 L257.0 484.0 L258.0 483.0 L264.0 483.0 L265.0 482.0 L272.0 482.0 L273.0 481.0 L284.0 480.0 L285.0 479.0 L299.0 477.0 L304.0 475.0 L308.0 475.0 L344.0 464.0 L359.0 457.0 L361.0 457.0 L375.0 450.0 L397.0 435.0 L397.0 431.0 L398.0 430.0 L398.0 406.0 L397.0 405.0 L397.0 396.0 L396.0 395.0 L396.0 389.0 L395.0 388.0 L392.0 371.0 L386.0 354.0 L377.0 336.0 L366.0 320.0 L341.0 294.0 L330.0 286.0 L313.0 277.0 L311.0 277.0 L306.0 274.0 L291.0 269.0 L288.0 267.0 L283.0 266.0 L267.0 258.0 L264.0 258.0 L259.0 265.0 L239.0 284.0 L224.0 292.0 L214.0 295.0 L209.0 295.0 L208.0 296.0 L193.0 296.0 L192.0 295.0 L187.0 295.0 L177.0 292.0 L167.0 287.0 L158.0 281.0 L142.0 265.0 L137.0 258.0 L134.0 258.0 L125.0 263.0 L95.0 274.0 L76.0 283.0 L60.0 294.0 L39.0 315.0 L24.0 336.0 L15.0 354.0 L9.0 371.0 L9.0 374.0 L6.0 383.0 L5.0 395.0 L4.0 396.0 L4.0 405.0 Z M187.0 3.0 L186.0 4.0 L180.0 4.0 L179.0 5.0 L170.0 6.0 L156.0 11.0 L146.0 16.0 L136.0 23.0 L120.0 40.0 L115.0 48.0 L108.0 64.0 L108.0 67.0 L105.0 76.0 L105.0 81.0 L104.0 82.0 L103.0 112.0 L100.0 114.0 L95.0 120.0 L95.0 123.0 L94.0 124.0 L94.0 135.0 L95.0 136.0 L97.0 146.0 L101.0 154.0 L107.0 161.0 L109.0 171.0 L114.0 186.0 L125.0 207.0 L131.0 215.0 L143.0 227.0 L159.0 238.0 L159.0 259.0 L162.0 262.0 L177.0 270.0 L190.0 274.0 L199.0 274.0 L201.0 275.0 L202.0 274.0 L211.0 274.0 L224.0 270.0 L239.0 262.0 L242.0 259.0 L242.0 238.0 L258.0 227.0 L270.0 215.0 L279.0 202.0 L287.0 186.0 L292.0 171.0 L294.0 161.0 L298.0 157.0 L304.0 146.0 L306.0 139.0 L306.0 135.0 L307.0 134.0 L307.0 124.0 L305.0 118.0 L298.0 112.0 L297.0 82.0 L296.0 81.0 L296.0 76.0 L295.0 75.0 L293.0 64.0 L286.0 48.0 L278.0 36.0 L261.0 20.0 L255.0 16.0 L240.0 9.0 L231.0 6.0 L227.0 6.0 L221.0 4.0 L215.0 4.0 L214.0 3.0 Z',
+// 상반신(머리~가슴) 구도 가이드. 선만 그려 몸을 가리지 않는다. 모양은 도움말 창에서 고를 수 있다.
+const GUIDE_WIDTH = 540
+const GUIDE_HEIGHT = 491
+const GUIDE_SHAPES: Record<
+  CameraGuideVariant,
+  { head?: { cx: number; cy: number; rx: number; ry: number }; path: string }
+> = {
+  basic: {
+    head: { cx: 270, cy: 125, rx: 92, ry: 118 },
+    path: 'M 229 234 C 229 258 219 268 197 276 C 104 296 16 336 6 486 M 311 234 C 311 258 321 268 343 276 C 436 296 524 336 534 486',
+  },
+  silhouette: {
+    path: [
+      'M 128 491',
+      'C 131 453 138 414 147 379',
+      'C 153 353 158 324 169 306',
+      'C 180 289 207 282 231 272',
+      'C 243 267 246 257 245 244',
+      'C 234 236 228 222 225 208',
+      'C 219 207 217 200 217 191',
+      'C 217 185 219 181 222 181',
+      'C 218 161 220 144 230 132',
+      'C 240 119 254 115 270 115',
+      'C 286 115 300 119 310 132',
+      'C 320 144 322 161 318 181',
+      'C 321 181 323 185 323 191',
+      'C 323 200 321 207 315 208',
+      'C 312 222 306 236 295 244',
+      'C 294 257 297 267 309 272',
+      'C 333 282 360 289 371 306',
+      'C 382 324 387 353 393 379',
+      'C 402 414 409 453 412 491',
+    ].join(' '),
+  },
+}
+
+export const CAMERA_GUIDE_VARIANTS: Array<{ value: CameraGuideVariant; label: string }> = [
+  { value: 'basic', label: '기본형' },
+  { value: 'silhouette', label: '윤곽형' },
+]
+
+/** 가이드 모양의 선. 카메라 화면과 도움말 창의 미리보기가 함께 쓴다. */
+function GuideShape({ variant }: { variant: CameraGuideVariant }) {
+  const { head, path } = GUIDE_SHAPES[variant]
+  return (
+    <>
+      {head && <ellipse {...head} vectorEffect="non-scaling-stroke" />}
+      <path d={path} vectorEffect="non-scaling-stroke" />
+    </>
+  )
+}
+
+/** 도움말 창에서 가이드 모양을 고를 때 보여주는 작은 미리보기 */
+export function GuideShapePreview({ variant }: { variant: CameraGuideVariant }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox={`0 0 ${GUIDE_WIDTH} ${GUIDE_HEIGHT}`}
+      className="h-11 w-12 shrink-0 stroke-neutral-600"
+      fill="none"
+      strokeWidth={2}
+      strokeLinecap="round"
+    >
+      <GuideShape variant={variant} />
+    </svg>
+  )
 }
 
 // 구도 가이드는 안내용이다. 실제 얼굴/상체/양손 검출 판정과 모션 게이트는 변경하지 않는다.
@@ -133,39 +193,57 @@ const GUIDE_STEPS = [
 
 // current: 1~4는 진행 중인 단계, 5는 모든 단계 완료(번역 중)
 export function GuideSteps({ current }: { current: number }) {
+  // 모든 단계를 마치면(번역 중/번역 완료) 진행 방향 화살표는 숨긴다.
+  const allDone = current > GUIDE_STEPS.length
+
   return (
-    <ol aria-label="사용 단계" className="grid grid-cols-4 gap-2 sm:gap-3">
+    <ol aria-label="사용 단계" className="flex items-start gap-1 sm:gap-2">
       {GUIDE_STEPS.map((step, index) => {
         const number = index + 1
         const done = number < current
         const active = number === current
+        const showArrow = !allDone && number < GUIDE_STEPS.length
 
         return (
-          <li
-            key={step.title}
-            aria-current={active ? 'step' : undefined}
-            className="flex flex-col items-center gap-1.5 text-center"
-          >
-            <span
-              className={`flex h-9 w-9 items-center justify-center rounded-full text-base font-bold sm:h-10 sm:w-10 sm:text-lg ${
-                done
-                  ? 'bg-emerald-400 text-neutral-950'
-                  : active
-                    ? 'bg-white text-neutral-950 ring-4 ring-white/30'
-                    : 'bg-white/10 text-white/60'
-              }`}
+          <Fragment key={step.title}>
+            <li
+              aria-current={active ? 'step' : undefined}
+              className="flex min-w-0 flex-1 flex-col items-center gap-1.5 text-center"
             >
-              <span aria-hidden="true">{done ? '✓' : number}</span>
-              <span className="sr-only">{done ? `${number}단계 완료` : `${number}단계`}</span>
-            </span>
-            <span
-              className={`break-keep text-sm leading-snug sm:text-base ${
-                active ? 'font-bold text-white' : done ? 'font-medium text-emerald-200' : 'text-white/60'
-              }`}
-            >
-              {step.title}
-            </span>
-          </li>
+              {/* 지금 단계는 불이 들어온 것처럼 밝게 빛나고, 지난 단계는 초록색으로 켜진 채 남는다. */}
+              <span
+                className={`flex h-9 w-9 items-center justify-center rounded-full text-base font-bold transition-all duration-500 motion-reduce:transition-none sm:h-10 sm:w-10 sm:text-lg ${
+                  done
+                    ? 'bg-emerald-400 text-neutral-950 shadow-[0_0_12px_2px_rgba(52,211,153,0.45)]'
+                    : active
+                      ? 'bg-white text-neutral-950 ring-4 ring-white/30 shadow-[0_0_18px_6px_rgba(255,255,255,0.5)]'
+                      : 'bg-white/10 text-white/60'
+                }`}
+              >
+                <span aria-hidden="true">{done ? '✓' : number}</span>
+                <span className="sr-only">{done ? `${number}단계 완료` : `${number}단계`}</span>
+              </span>
+              <span
+                className={`break-keep text-sm leading-snug transition-colors duration-500 motion-reduce:transition-none sm:text-base ${
+                  active ? 'font-bold text-white' : done ? 'font-medium text-emerald-200' : 'text-white/60'
+                }`}
+              >
+                {step.title}
+              </span>
+            </li>
+
+            {/* 단계 사이 화살표. 앞 단계를 마치면 초록색으로 켜진다. 원의 가운데 높이에 맞춘다. */}
+            {showArrow && (
+              <li aria-hidden="true" className="mt-2.5 shrink-0 sm:mt-3">
+                <ChevronRight
+                  className={`h-5 w-5 transition-colors duration-500 motion-reduce:transition-none ${
+                    done ? 'text-emerald-300' : 'text-white/25'
+                  }`}
+                  strokeWidth={3}
+                />
+              </li>
+            )}
+          </Fragment>
         )
       })}
     </ol>
@@ -196,67 +274,83 @@ export function HowToCard() {
 }
 
 const HAND_MARKER_CLASS =
-  'absolute top-[60%] flex h-14 w-14 animate-pulse items-center justify-center rounded-2xl border-2 border-dashed border-white/90 bg-neutral-950/40 motion-reduce:animate-none sm:h-16 sm:w-16'
+  'absolute top-[38%] flex h-14 w-14 animate-pulse items-center justify-center rounded-2xl border-2 border-dashed border-white/90 bg-neutral-950/40 motion-reduce:animate-none sm:h-16 sm:w-16'
 
-interface PositionGuideOverlayProps {
-  missingPart: MissingPart
-  /**
-   * 보정 단계가 아닐 때(수어 시작 가능/인식 중/번역 중/번역 완료)는 윤곽만 표시하고,
-   * 수어 동작을 가리지 않도록 안내 문구와 손 위치 표시는 숨긴다.
-   */
-  outlineOnly?: boolean
+/** 상태별 윤곽 선 종류와 영상 위 한 줄 안내. 안내가 없으면(수어 중 등) 윤곽만 표시한다. */
+function getPositionGuideAppearance({ isRecording, isPredicting, calibrationStatus, missingPart }: GuideState) {
+  if (isPredicting || isRecording || calibrationStatus === 'done' || calibrationStatus === 'ready') {
+    return { dashed: false, label: null }
+  }
+  if (calibrationStatus === 'calibrating') return { dashed: false, label: '좋아요, 그대로 계세요' }
+  if (calibrationStatus === 'unstable') return { dashed: true, label: '움직임이 감지되었어요' }
+  return {
+    dashed: true,
+    label: missingPart === 'hand' ? '두 손을 가슴 앞으로 올려 주세요' : '얼굴과 어깨를 선에 맞춰 주세요',
+  }
 }
 
-/** 구도 안내 전용: 상반신(머리~가슴)이 윤곽 안에 들어오도록 거리를 맞춘다. 실제 검출 판정은 하지 않는다. */
-export function PositionGuideOverlay({ missingPart, outlineOnly = false }: PositionGuideOverlayProps) {
-  // 영상 위 실루엣에 붙는 한 줄 안내
-  const guideLabel = missingPart === 'hand' ? '두 손을 가슴 앞으로 올려 주세요' : '윤곽에 상반신을 맞춰 주세요'
+/**
+ * 구도 안내 전용: 얼굴과 어깨가 선에 맞도록 거리를 맞춘다. 실제 검출 판정은 하지 않는다.
+ * 색은 항상 흰색이다. 맞추는 중이거나 다시 맞춰야 하면 점선, 그 외에는 실선으로 표시한다.
+ */
+export function PositionGuideOverlay({
+  state,
+  variant = 'basic',
+}: {
+  state: GuideState
+  variant?: CameraGuideVariant
+}) {
+  const { dashed, label } = getPositionGuideAppearance(state)
+  // 밝은 배경에서도 보이도록 어두운 선을 아래에 한 겹 깐다
+  const layers = [
+    { className: 'stroke-black/50', strokeWidth: 5, strokeDasharray: undefined },
+    {
+      className: 'stroke-white',
+      strokeWidth: 3,
+      strokeDasharray: dashed ? '10 8' : undefined,
+    },
+  ]
 
   return (
     <div
       aria-hidden="true"
-      className="pointer-events-none absolute inset-x-[8%] bottom-[5%] top-[13%] z-10 flex items-center justify-center"
+      className="pointer-events-none absolute inset-x-[4%] bottom-0 top-[7%] z-10 flex items-center justify-center"
     >
-      <div className="relative aspect-[402/491] h-full max-w-full">
+      <div className="relative aspect-[540/491] h-full max-w-full">
         <svg
-          viewBox={`0 0 ${UPPER_BODY_GUIDE.width} ${UPPER_BODY_GUIDE.height}`}
+          viewBox={`0 0 ${GUIDE_WIDTH} ${GUIDE_HEIGHT}`}
           className="absolute inset-0 h-full w-full"
           preserveAspectRatio="xMidYMid meet"
         >
-          {/* 밝은 배경에서도 보이도록 어두운 테두리를 한 겹 깐다 */}
-          <path
-            d={UPPER_BODY_GUIDE.path}
-            fill="none"
-            stroke="rgba(0, 0, 0, 0.5)"
-            strokeWidth={5}
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-          />
-          <path
-            d={UPPER_BODY_GUIDE.path}
-            fill="rgba(255, 255, 255, 0.16)"
-            stroke="rgba(255, 255, 255, 0.92)"
-            strokeWidth={2}
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-          />
+          {layers.map((layer) => (
+            <g
+              key={layer.strokeWidth}
+              className={layer.className}
+              fill="none"
+              strokeWidth={layer.strokeWidth}
+              strokeDasharray={layer.strokeDasharray}
+              strokeLinecap="round"
+            >
+              <GuideShape variant={variant} />
+            </g>
+          ))}
         </svg>
 
         {/* 손이 안 보일 때만 손을 올릴 위치를 표시한다 */}
-        {!outlineOnly && missingPart === 'hand' && (
+        {state.calibrationStatus === 'preparing' && !state.isRecording && !state.isPredicting && state.missingPart === 'hand' && (
           <>
-            <div className={`left-[14%] ${HAND_MARKER_CLASS}`}>
+            <div className={`left-[23%] ${HAND_MARKER_CLASS}`}>
               <Hand className="h-8 w-8 text-white sm:h-9 sm:w-9" />
             </div>
-            <div className={`right-[14%] ${HAND_MARKER_CLASS}`}>
+            <div className={`right-[23%] ${HAND_MARKER_CLASS}`}>
               <Hand className="h-8 w-8 -scale-x-100 text-white sm:h-9 sm:w-9" />
             </div>
           </>
         )}
 
-        {!outlineOnly && (
-          <span className="absolute bottom-[6%] left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-neutral-950/80 px-4 py-2 text-sm font-semibold leading-none text-white sm:text-base">
-            {guideLabel}
+        {label && (
+          <span className="absolute bottom-[26%] left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-neutral-950/80 px-4 py-2 text-sm font-semibold leading-none text-white sm:text-base">
+            {label}
           </span>
         )}
       </div>

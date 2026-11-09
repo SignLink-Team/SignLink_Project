@@ -12,6 +12,7 @@ import {
   ApiSession,
   ApiTranslation,
   ApiUser,
+  CameraGuideVariant,
   TranslationCandidate,
   TranslationLog,
   UserState,
@@ -34,6 +35,8 @@ const WS_RESPONSE_TIMEOUT_MS = 8000
 
 const STORAGE_KEY_AUTOSAVE = 'signlink_autosave'
 const STORAGE_KEY_NMS_COLLAPSED = 'signlink_nms_collapsed'
+const STORAGE_KEY_CAMERA_MIRRORED = 'signlink_camera_mirrored'
+const STORAGE_KEY_CAMERA_GUIDE_VARIANT = 'signlink_camera_guide_variant'
 
 const SESSION_TITLE = '실시간 수어 진료'
 const DEFAULT_PATIENT_ID = 'none'
@@ -103,6 +106,12 @@ export default function App() {
   const [cameraActive, setCameraActive] = useState(false)
   // '다시 인식'을 누를 때마다 증가시켜 CameraView가 보정부터 다시 시작하게 한다.
   const [retryRequestId, setRetryRequestId] = useState(0)
+  // 카메라 화면 좌우 반전(도움말 창에서 변경). 새로고침해도 유지
+  const [isCameraMirrored, setIsCameraMirrored] = useState(() => safeStorage.get(STORAGE_KEY_CAMERA_MIRRORED) === 'true')
+  // 카메라 상반신 가이드 모양(도움말 창에서 변경). 새로고침해도 유지
+  const [cameraGuideVariant, setCameraGuideVariant] = useState<CameraGuideVariant>(() =>
+    safeStorage.get(STORAGE_KEY_CAMERA_GUIDE_VARIANT) === 'silhouette' ? 'silhouette' : 'basic',
+  )
   const [isHelpOpen, setIsHelpOpen] = useState(false)
   const [isPredicting, setIsPredicting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -140,6 +149,14 @@ export default function App() {
   useEffect(() => {
     safeStorage.set(STORAGE_KEY_NMS_COLLAPSED, String(nmsCollapsed))
   }, [nmsCollapsed])
+
+  useEffect(() => {
+    safeStorage.set(STORAGE_KEY_CAMERA_MIRRORED, String(isCameraMirrored))
+  }, [isCameraMirrored])
+
+  useEffect(() => {
+    safeStorage.set(STORAGE_KEY_CAMERA_GUIDE_VARIANT, cameraGuideVariant)
+  }, [cameraGuideVariant])
 
   // ------------------------------------------------------------
   // 공통 상태 초기화
@@ -587,6 +604,8 @@ export default function App() {
                     onStreamEnd={handleStreamEnd}
                     isPredicting={isPredicting}
                     retryRequestId={retryRequestId}
+                    isMirrored={isCameraMirrored}
+                    guideVariant={cameraGuideVariant}
                   />
 
                   <TranslationResult
@@ -636,7 +655,15 @@ export default function App() {
         </div>
       </footer>
 
-      <InstructionsModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} isLoggedIn={user.isLoggedIn} />
+      <InstructionsModal
+        isOpen={isHelpOpen}
+        onClose={() => setIsHelpOpen(false)}
+        isLoggedIn={user.isLoggedIn}
+        isCameraMirrored={isCameraMirrored}
+        onToggleCameraMirrored={() => setIsCameraMirrored((value) => !value)}
+        cameraGuideVariant={cameraGuideVariant}
+        onChangeCameraGuideVariant={setCameraGuideVariant}
+      />
     </div>
   )
 }

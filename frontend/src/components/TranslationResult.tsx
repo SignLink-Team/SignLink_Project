@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { AlertTriangle, Check, CheckCircle2, Copy, Edit3, History, Languages, RotateCcw, UserCheck, X } from 'lucide-react'
+import { AlertTriangle, Check, CheckCircle2, Copy, Edit3, History, RotateCcw, UserCheck, X } from 'lucide-react'
 import { TranslationCandidate } from '../types'
 import { UnkSolver } from './UnkSolver'
 import { useTTS } from '../hooks/useTTS'
@@ -71,12 +71,6 @@ export const TranslationResult = ({
 
   return (
     <div className="w-full mt-6">
-      <div className="flex items-center gap-2 mb-3">
-        <Languages className="w-5 h-5 text-brand-green" />
-        <h2 className="text-lg font-bold font-sans text-on-surface">번역 결과</h2>
-        <TTSToggle enabled={ttsEnabled} onToggle={handleToggleTts} isSpeaking={isSpeaking} />
-      </div>
-
       <div className="w-full bg-white border border-neutral-100 rounded-2xl p-6 md:p-8 shadow-xs relative min-h-[140px] flex flex-col justify-center transition-all duration-300">
         <AnimatePresence mode="wait">
           {!hasText ? (
@@ -212,7 +206,7 @@ export const TranslationResult = ({
                   </button>
                 </div>
 
-                <p className="text-xs text-neutral-400 font-medium">Atkinson Hyperlegible 고정밀 인식 폰트 적용됨</p>
+                <TTSToggle enabled={ttsEnabled} onToggle={handleToggleTts} isSpeaking={isSpeaking} />
               </div>
             </motion.div>
           )}
