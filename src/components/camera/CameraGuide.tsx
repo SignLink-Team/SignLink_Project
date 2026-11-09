@@ -1,5 +1,6 @@
 import { Fragment } from 'react'
 import { ChevronRight, Hand } from 'lucide-react'
+import { CameraGuideVariant } from '../../types'
 
 // CameraView의 사용 안내(단계 표시, 사용 방법 카드, 상반신 구도 가이드)와 안내 문구.
 
@@ -13,13 +14,72 @@ interface GuideText {
   description: string
 }
 
-// 상반신(머리~가슴) 구도 가이드. 얼굴 타원과 어깨선만 그려 몸을 가리지 않는다.
-const UPPER_BODY_GUIDE = {
-  width: 540,
-  height: 491,
-  head: { cx: 270, cy: 125, rx: 92, ry: 118 },
-  shoulders:
-    'M 229 234 C 229 258 219 268 197 276 C 104 296 16 336 6 486 M 311 234 C 311 258 321 268 343 276 C 436 296 524 336 534 486',
+// 상반신(머리~가슴) 구도 가이드. 선만 그려 몸을 가리지 않는다. 모양은 도움말 창에서 고를 수 있다.
+const GUIDE_WIDTH = 540
+const GUIDE_HEIGHT = 491
+const GUIDE_SHAPES: Record<
+  CameraGuideVariant,
+  { head?: { cx: number; cy: number; rx: number; ry: number }; path: string }
+> = {
+  basic: {
+    head: { cx: 270, cy: 125, rx: 92, ry: 118 },
+    path: 'M 229 234 C 229 258 219 268 197 276 C 104 296 16 336 6 486 M 311 234 C 311 258 321 268 343 276 C 436 296 524 336 534 486',
+  },
+  silhouette: {
+    path: [
+      'M 128 491',
+      'C 131 453 138 414 147 379',
+      'C 153 353 158 324 169 306',
+      'C 180 289 207 282 231 272',
+      'C 243 267 246 257 245 244',
+      'C 234 236 228 222 225 208',
+      'C 219 207 217 200 217 191',
+      'C 217 185 219 181 222 181',
+      'C 218 161 220 144 230 132',
+      'C 240 119 254 115 270 115',
+      'C 286 115 300 119 310 132',
+      'C 320 144 322 161 318 181',
+      'C 321 181 323 185 323 191',
+      'C 323 200 321 207 315 208',
+      'C 312 222 306 236 295 244',
+      'C 294 257 297 267 309 272',
+      'C 333 282 360 289 371 306',
+      'C 382 324 387 353 393 379',
+      'C 402 414 409 453 412 491',
+    ].join(' '),
+  },
+}
+
+export const CAMERA_GUIDE_VARIANTS: Array<{ value: CameraGuideVariant; label: string }> = [
+  { value: 'basic', label: '기본형' },
+  { value: 'silhouette', label: '윤곽형' },
+]
+
+/** 가이드 모양의 선. 카메라 화면과 도움말 창의 미리보기가 함께 쓴다. */
+function GuideShape({ variant }: { variant: CameraGuideVariant }) {
+  const { head, path } = GUIDE_SHAPES[variant]
+  return (
+    <>
+      {head && <ellipse {...head} vectorEffect="non-scaling-stroke" />}
+      <path d={path} vectorEffect="non-scaling-stroke" />
+    </>
+  )
+}
+
+/** 도움말 창에서 가이드 모양을 고를 때 보여주는 작은 미리보기 */
+export function GuideShapePreview({ variant }: { variant: CameraGuideVariant }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox={`0 0 ${GUIDE_WIDTH} ${GUIDE_HEIGHT}`}
+      className="h-11 w-12 shrink-0 stroke-neutral-600"
+      fill="none"
+      strokeWidth={2}
+      strokeLinecap="round"
+    >
+      <GuideShape variant={variant} />
+    </svg>
+  )
 }
 
 // 구도 가이드는 안내용이다. 실제 얼굴/상체/양손 검출 판정과 모션 게이트는 변경하지 않는다.
@@ -233,9 +293,14 @@ function getPositionGuideAppearance({ isRecording, isPredicting, calibrationStat
  * 구도 안내 전용: 얼굴과 어깨가 선에 맞도록 거리를 맞춘다. 실제 검출 판정은 하지 않는다.
  * 색은 항상 흰색이다. 맞추는 중이거나 다시 맞춰야 하면 점선, 그 외에는 실선으로 표시한다.
  */
-export function PositionGuideOverlay({ state }: { state: GuideState }) {
+export function PositionGuideOverlay({
+  state,
+  variant = 'basic',
+}: {
+  state: GuideState
+  variant?: CameraGuideVariant
+}) {
   const { dashed, label } = getPositionGuideAppearance(state)
-  const { head, shoulders, width, height } = UPPER_BODY_GUIDE
   // 밝은 배경에서도 보이도록 어두운 선을 아래에 한 겹 깐다
   const layers = [
     { className: 'stroke-black/50', strokeWidth: 5, strokeDasharray: undefined },
@@ -253,7 +318,7 @@ export function PositionGuideOverlay({ state }: { state: GuideState }) {
     >
       <div className="relative aspect-[540/491] h-full max-w-full">
         <svg
-          viewBox={`0 0 ${width} ${height}`}
+          viewBox={`0 0 ${GUIDE_WIDTH} ${GUIDE_HEIGHT}`}
           className="absolute inset-0 h-full w-full"
           preserveAspectRatio="xMidYMid meet"
         >
@@ -266,8 +331,7 @@ export function PositionGuideOverlay({ state }: { state: GuideState }) {
               strokeDasharray={layer.strokeDasharray}
               strokeLinecap="round"
             >
-              <ellipse {...head} vectorEffect="non-scaling-stroke" />
-              <path d={shoulders} vectorEffect="non-scaling-stroke" />
+              <GuideShape variant={variant} />
             </g>
           ))}
         </svg>

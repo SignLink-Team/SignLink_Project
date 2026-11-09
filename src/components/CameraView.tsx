@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Camera, Film, Hand, Pause, Play, Square, Upload, VideoOff, X } from 'lucide-react'
 import { BrowserKeypointExtractor } from '../keypointExtractor'
 import { FaceFrame } from '../nms'
+import { CameraGuideVariant } from '../types'
 import { getErrorMessage } from '../utils'
 import {
   GuideSteps,
@@ -55,6 +56,8 @@ interface CameraViewProps {
   retryRequestId?: number
   /** 카메라 화면 좌우 반전. 화면 표시만 뒤집으므로 키포인트 추출과 인식에는 영향이 없다. */
   isMirrored?: boolean
+  /** 상반신 가이드 모양 */
+  guideVariant?: CameraGuideVariant
 }
 
 type InputMode = 'camera' | 'video'
@@ -105,6 +108,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
   isPredicting = false,
   retryRequestId = 0,
   isMirrored = false,
+  guideVariant = 'basic',
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -1104,7 +1108,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
             </div>
 
             {/* 상반신 가이드는 카메라가 켜져 있는 동안 항상 표시한다. */}
-            <PositionGuideOverlay state={guideState} />
+            <PositionGuideOverlay state={guideState} variant={guideVariant} />
 
             {/* 준비 완료/인식 중에는 가이드 안내 문구 대신 짧은 안내만 보여 수어 동작을 가리지 않는다. */}
             {!cameraError && !isPredicting && (calibrationStatus === 'ready' || isRecording) && (
