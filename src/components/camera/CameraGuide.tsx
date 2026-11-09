@@ -15,11 +15,11 @@ interface GuideText {
 
 // 상반신(머리~가슴) 구도 가이드. 얼굴 타원과 어깨선만 그려 몸을 가리지 않는다.
 const UPPER_BODY_GUIDE = {
-  width: 402,
+  width: 540,
   height: 491,
-  head: { cx: 201, cy: 125, rx: 92, ry: 118 },
+  head: { cx: 270, cy: 125, rx: 92, ry: 118 },
   shoulders:
-    'M 160 234 C 160 258 150 268 128 276 C 62 298 8 330 4 486 M 242 234 C 242 258 252 268 274 276 C 340 298 394 330 398 486',
+    'M 229 234 C 229 258 219 268 197 276 C 104 296 16 336 6 486 M 311 234 C 311 258 321 268 343 276 C 436 296 524 336 534 486',
 }
 
 // 구도 가이드는 안내용이다. 실제 얼굴/상체/양손 검출 판정과 모션 게이트는 변경하지 않는다.
@@ -251,7 +251,7 @@ export function PositionGuideOverlay({ state }: { state: GuideState }) {
       aria-hidden="true"
       className="pointer-events-none absolute inset-x-[4%] bottom-0 top-[7%] z-10 flex items-center justify-center"
     >
-      <div className="relative aspect-[402/491] h-full max-w-full">
+      <div className="relative aspect-[540/491] h-full max-w-full">
         <svg
           viewBox={`0 0 ${width} ${height}`}
           className="absolute inset-0 h-full w-full"
@@ -275,10 +275,10 @@ export function PositionGuideOverlay({ state }: { state: GuideState }) {
         {/* 손이 안 보일 때만 손을 올릴 위치를 표시한다 */}
         {state.calibrationStatus === 'preparing' && !state.isRecording && !state.isPredicting && state.missingPart === 'hand' && (
           <>
-            <div className={`left-[14%] ${HAND_MARKER_CLASS}`}>
+            <div className={`left-[23%] ${HAND_MARKER_CLASS}`}>
               <Hand className="h-8 w-8 text-white sm:h-9 sm:w-9" />
             </div>
-            <div className={`right-[14%] ${HAND_MARKER_CLASS}`}>
+            <div className={`right-[23%] ${HAND_MARKER_CLASS}`}>
               <Hand className="h-8 w-8 -scale-x-100 text-white sm:h-9 sm:w-9" />
             </div>
           </>
