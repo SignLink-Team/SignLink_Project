@@ -27,25 +27,25 @@ const GUIDE_SHAPES: Record<
   },
   silhouette: {
     path: [
-      'M 128 491',
-      'C 131 453 138 414 147 379',
-      'C 153 353 158 324 169 306',
-      'C 180 289 207 282 231 272',
-      'C 243 267 246 257 245 244',
-      'C 234 236 228 222 225 208',
-      'C 219 207 217 200 217 191',
-      'C 217 185 219 181 222 181',
-      'C 218 161 220 144 230 132',
-      'C 240 119 254 115 270 115',
-      'C 286 115 300 119 310 132',
-      'C 320 144 322 161 318 181',
-      'C 321 181 323 185 323 191',
-      'C 323 200 321 207 315 208',
-      'C 312 222 306 236 295 244',
-      'C 294 257 297 267 309 272',
-      'C 333 282 360 289 371 306',
-      'C 382 324 387 353 393 379',
-      'C 402 414 409 453 412 491',
+      'M 136 491',
+      'C 139 453 145 414 153 379',
+      'C 159 353 165 329 176 311',
+      'C 187 296 213 292 237 282',
+      'C 247 278 250 270 249 259',
+      'C 240 254 235 245 233 235',
+      'C 228 235 226 230 226 224',
+      'C 226 220 228 217 231 217',
+      'C 227 204 229 193 237 185',
+      'C 245 177 257 174 270 174',
+      'C 283 174 295 177 303 185',
+      'C 311 193 313 204 309 217',
+      'C 312 217 314 220 314 224',
+      'C 314 230 312 235 307 235',
+      'C 305 245 300 254 291 259',
+      'C 290 270 293 278 303 282',
+      'C 327 292 353 296 364 311',
+      'C 375 329 381 353 387 379',
+      'C 395 414 401 453 404 491',
     ].join(' '),
   },
 }
@@ -61,7 +61,11 @@ function GuideShape({ variant }: { variant: CameraGuideVariant }) {
   return (
     <>
       {head && <ellipse {...head} vectorEffect="non-scaling-stroke" />}
-      <path d={path} vectorEffect="non-scaling-stroke" />
+      <path
+        d={path}
+        transform={variant === 'silhouette' ? 'translate(270 491) scale(1.04) translate(-270 -491)' : undefined}
+        vectorEffect="non-scaling-stroke"
+      />
     </>
   )
 }
@@ -129,14 +133,6 @@ const PREDICTING_TEXT: GuideText = {
   description: '결과가 나올 때까지 잠시만 기다려 주세요. 카메라는 그대로 켜 두세요.',
 }
 
-const STATUS_LABEL: Record<MotionCalibrationStatus, string> = {
-  preparing: '자리 맞추기',
-  calibrating: '가만히 있기',
-  unstable: '다시 맞추기 필요',
-  ready: '수어 시작 가능',
-  done: '번역 완료',
-}
-
 const STATUS_STEP: Record<MotionCalibrationStatus, number> = {
   preparing: 2,
   calibrating: 3,
@@ -168,15 +164,6 @@ export function getGuideText({ isRecording, isPredicting, calibrationStatus, mis
   return CALIBRATION_GUIDE_TEXT[calibrationStatus]
 }
 
-/** 영상 왼쪽 위 HUD의 상태 문구 */
-export function getStatusText(state: GuideState): string {
-  const currentStep = getCurrentStep(state)
-  if (state.isRecording) return `${currentStep}/4 수어 인식 중`
-  if (state.isPredicting) return '번역 중'
-  if (state.calibrationStatus === 'done') return STATUS_LABEL.done
-  return `${currentStep}/4 ${STATUS_LABEL[state.calibrationStatus]}`
-}
-
 // 처음 쓰는 사람을 위한 4단계. 카메라를 켜기 전에는 사용 방법으로, 켠 뒤에는 현재 단계 표시로 쓴다.
 const GUIDE_STEPS = [
   { title: '카메라 켜기', hint: '위 화면을 눌러 카메라를 켜요.' },
@@ -192,12 +179,13 @@ const GUIDE_STEPS = [
 ] as const
 
 // current: 1~4는 진행 중인 단계, 5는 모든 단계 완료(번역 중)
-export function GuideSteps({ current }: { current: number }) {
+// compact: 카메라 영상 위(가이드 머리 위)에 얹을 때 쓰는 작은 크기
+export function GuideSteps({ current, compact = false }: { current: number; compact?: boolean }) {
   // 모든 단계를 마치면(번역 중/번역 완료) 진행 방향 화살표는 숨긴다.
   const allDone = current > GUIDE_STEPS.length
 
   return (
-    <ol aria-label="사용 단계" className="flex items-start gap-1 sm:gap-2">
+    <ol aria-label="사용 단계" className={`flex items-start ${compact ? 'gap-0.5 sm:gap-1.5' : 'gap-1 sm:gap-2'}`}>
       {GUIDE_STEPS.map((step, index) => {
         const number = index + 1
         const done = number < current
@@ -208,11 +196,13 @@ export function GuideSteps({ current }: { current: number }) {
           <Fragment key={step.title}>
             <li
               aria-current={active ? 'step' : undefined}
-              className="flex min-w-0 flex-1 flex-col items-center gap-1.5 text-center"
+              className={`flex min-w-0 flex-1 flex-col items-center text-center ${compact ? 'gap-1' : 'gap-1.5'}`}
             >
               {/* 지금 단계는 불이 들어온 것처럼 밝게 빛나고, 지난 단계는 초록색으로 켜진 채 남는다. */}
               <span
-                className={`flex h-9 w-9 items-center justify-center rounded-full text-base font-bold transition-all duration-500 motion-reduce:transition-none sm:h-10 sm:w-10 sm:text-lg ${
+                className={`flex items-center justify-center rounded-full font-bold transition-all duration-500 motion-reduce:transition-none ${
+                  compact ? 'h-7 w-7 text-sm sm:h-8 sm:w-8 sm:text-base' : 'h-9 w-9 text-base sm:h-10 sm:w-10 sm:text-lg'
+                } ${
                   done
                     ? 'bg-emerald-400 text-neutral-950 shadow-[0_0_12px_2px_rgba(52,211,153,0.45)]'
                     : active
@@ -224,7 +214,9 @@ export function GuideSteps({ current }: { current: number }) {
                 <span className="sr-only">{done ? `${number}단계 완료` : `${number}단계`}</span>
               </span>
               <span
-                className={`break-keep text-sm leading-snug transition-colors duration-500 motion-reduce:transition-none sm:text-base ${
+                className={`break-keep transition-colors duration-500 motion-reduce:transition-none ${
+                  compact ? 'whitespace-nowrap text-[11px] leading-tight sm:text-sm' : 'text-sm leading-snug sm:text-base'
+                } ${
                   active ? 'font-bold text-white' : done ? 'font-medium text-emerald-200' : 'text-white/60'
                 }`}
               >
@@ -234,9 +226,9 @@ export function GuideSteps({ current }: { current: number }) {
 
             {/* 단계 사이 화살표. 앞 단계를 마치면 초록색으로 켜진다. 원의 가운데 높이에 맞춘다. */}
             {showArrow && (
-              <li aria-hidden="true" className="mt-2.5 shrink-0 sm:mt-3">
+              <li aria-hidden="true" className={`shrink-0 ${compact ? 'mt-1.5 sm:mt-2' : 'mt-2.5 sm:mt-3'}`}>
                 <ChevronRight
-                  className={`h-5 w-5 transition-colors duration-500 motion-reduce:transition-none ${
+                  className={`transition-colors duration-500 motion-reduce:transition-none ${compact ? 'h-4 w-4' : 'h-5 w-5'} ${
                     done ? 'text-emerald-300' : 'text-white/25'
                   }`}
                   strokeWidth={3}
@@ -274,7 +266,7 @@ export function HowToCard() {
 }
 
 const HAND_MARKER_CLASS =
-  'absolute top-[38%] flex h-14 w-14 animate-pulse items-center justify-center rounded-2xl border-2 border-dashed border-white/90 bg-neutral-950/40 motion-reduce:animate-none sm:h-16 sm:w-16'
+  'absolute top-[38%] hidden h-14 w-14 sm:flex animate-pulse items-center justify-center rounded-2xl border-2 border-dashed border-white/90 bg-neutral-950/40 motion-reduce:animate-none sm:h-16 sm:w-16'
 
 /** 상태별 윤곽 선 종류와 영상 위 한 줄 안내. 안내가 없으면(수어 중 등) 윤곽만 표시한다. */
 function getPositionGuideAppearance({ isRecording, isPredicting, calibrationStatus, missingPart }: GuideState) {
@@ -314,7 +306,9 @@ export function PositionGuideOverlay({
   return (
     <div
       aria-hidden="true"
-      className="pointer-events-none absolute inset-x-[4%] bottom-0 top-[7%] z-10 flex items-center justify-center"
+      className={`pointer-events-none absolute inset-x-[4%] bottom-0 z-10 flex items-center justify-center ${
+        variant === 'silhouette' ? 'top-[7%]' : 'top-1'
+      }`}
     >
       <div className="relative aspect-[540/491] h-full max-w-full">
         <svg
@@ -349,7 +343,7 @@ export function PositionGuideOverlay({
         )}
 
         {label && (
-          <span className="absolute bottom-[26%] left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-neutral-950/80 px-4 py-2 text-sm font-semibold leading-none text-white sm:text-base">
+          <span className="absolute bottom-[max(26%,72px)] left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-neutral-950/80 px-4 py-2 text-sm font-semibold leading-none text-white sm:text-base">
             {label}
           </span>
         )}
